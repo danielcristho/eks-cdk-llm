@@ -1,1 +1,1 @@
-# eks-cdk-mlops
+# EKS CDK MLOPS
