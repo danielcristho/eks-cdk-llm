@@ -32,10 +32,11 @@ class EksStack(Stack):
         # General purpose node group (non-GPU)
         self.cluster.add_nodegroup_capacity(
             "ManagedNodeGroup",
-            desired_size=2,
+            desired_size=1,
             min_size=1,
-            max_size=3,
+            max_size=1,
             instance_types=[ec2.InstanceType("t3.medium")],
+            ami_type=eks.NodegroupAmiType.AL2023_X86_64_STANDARD,
         )
 
         # GPU node group for vLLM
@@ -57,6 +58,7 @@ class EksStack(Stack):
             max_size=2,
             instance_types=[ec2.InstanceType("g4dn.xlarge")],
             node_role=gpu_node_role,
+            ami_type=eks.NodegroupAmiType.AL2023_X86_64_NEURON,
             labels={"workload": "gpu"},
             taints=[
                 eks.TaintSpec(
