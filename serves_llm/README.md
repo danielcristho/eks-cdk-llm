@@ -26,14 +26,14 @@ The flow looks like this:
 
 ![Project Architecture](https://res.cloudinary.com/diunivf9n/image/upload/v1777186530/vllm-eks_ybekjc.webp)
 
-### The Stack
+## The Stack
 
-- **[vLLM](https://github.com/vllm-project/vllm)** — inference engine for the LLM. Fast, supports streaming, and exposes an OpenAI-compatible API out of the box.
-- **[Amazon EKS](https://aws.amazon.com/eks)** — managed Kubernetes to run the vLLM workload on a GPU node.
-- **[AWS CDK](https://github.com/aws/aws-cdk)** — infrastructure as code in Python. One `cdk deploy` and everything is provisioned.
-- **[Streamlit](https://github.com/streamlit/streamlit)** — simple chatbot UI that talks to the vLLM endpoint.
+- **vLLM** — inference engine for the LLM. Fast, supports streaming, and exposes an OpenAI-compatible API out of the box.
+- **Amazon EKS** — The Kubernetes service on AWS to run the vLLM workload.
+- **AWS CDK** — infrastructure as code to manage AWS infra, at this time I'll using Python. One `cdk deploy` and everything is provisioned.
+- **Streamlit** — simple chatbot UI that talks to the vLLM endpoint.
 
-#### Why vLLM?
+## Why vLLM?
 
 There are a few ways to serve an LLM — you could use TGI, Triton, or just raw HuggingFace `transformers`. I went with vLLM for a few reasons:
 
@@ -41,45 +41,130 @@ There are a few ways to serve an LLM — you could use TGI, Triton, or just raw 
 - **OpenAI-compatible API** — the chatbot can use the `openai` Python SDK without any changes
 - **Streaming support** — responses stream token by token, which makes the chatbot feel more responsive
 
-#### Why EKS?
+## Why EKS?
 
 I could've just spun up an EC2 instance and SSH'd in. But that's not really MLOps — that's just running a script on a server.
 
 EKS gives us a proper environment to run GPU workloads: node groups, taints and tolerations to make sure only the vLLM pod lands on the GPU node, and a LoadBalancer service to expose the endpoint.
 
-## Project Structure
+## The Code
 
+### EKS Stack
+
+The `EksStack` provisions everything at the infrastructure level: VPC, EKS cluster, node groups, and an S3 bucket for model storage.
+
+```python
+vpc = ec2.Vpc(self, "EksVpc", max_azs=2)
+
+cluster = eks.Cluster(
+    self, "EksCluster",
+    version=eks.KubernetesVersion.V1_34,
+    vpc=vpc,
+    default_capacity=0,
+    kubectl_layer=kubectl_layer,
+)
 ```
-serves_llm/
-├── serves_llm/
-│   ├── eks/
-│   │   └── eks_stack.py      # VPC, EKS cluster, GPU node group, S3 bucket
-│   └── vllm/
-│       └── vllm_stack.py     # vLLM deployment + LoadBalancer service
-├── src/
-│   └── app.py                # Streamlit chatbot
-└── app.py                    # CDK entrypoint
+
+`default_capacity=0` means no default node group — we define our own below.
+
+We have two node groups:
+
+```python
+# 1. CPU, runs system pods (CoreDNS, kube-proxy, etc.)
+cluster.add_nodegroup_capacity(
+    "ManagedNodeGroup",
+    desired_size=1,
+    instance_types=[ec2.InstanceType("t3.medium")],
+    ami_type=eks.NodegroupAmiType.AL2023_X86_64_STANDARD,
+)
+
+# 2. GPU, for running vLLM
+cluster.add_nodegroup_capacity(
+    "GpuNodeGroup",
+    desired_size=1,
+    instance_types=[ec2.InstanceType("g4dn.xlarge")],
+    ami_type=eks.NodegroupAmiType.AL2023_X86_64_NEURON,
+    labels={"workload": "gpu"},
+    taints=[
+        eks.TaintSpec(
+            key="nvidia.com/gpu",
+            value="true",
+            effect=eks.TaintEffect.NO_SCHEDULE,
+        )
+    ],
+)
 ```
 
-## Prerequisites
+The taint `nvidia.com/gpu=true:NoSchedule` on the GPU node group means no pod will be scheduled there unless it explicitly tolerates it. This keeps system pods off the GPU node.
 
-- AWS CLI
-- AWS CDK CLI: `npm install -g aws-cdk`
-- Python 3.9+
-- GPU quota for `g4dn.xlarge` — request via [Service Quotas](https://console.aws.amazon.com/servicequotas) ("Running On-Demand G and VT instances", minimum 4 vCPU)
-- HuggingFace account with access to [meta-llama/Llama-3.1-8B-Instruct](https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct)
+The S3 bucket is for model weights, and the GPU node role gets read access to it:
 
-## Setup
+```python
+self.model_bucket = s3.Bucket(self, "ModelBucket", ...)
+self.model_bucket.grant_read(gpu_node_role)
+```
 
-```bash
-git clone https://github.com/your-username/eks-cdk-mlops
-cd serves_llm
+### vLLM Stack
 
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+The `VllmStack` takes the cluster from `EksStack` and deploys vLLM on top of it.
 
-cp .env.example .env
-# fill in HF_TOKEN, CDK_DEFAULT_ACCOUNT, CDK_DEFAULT_REGION, AWS_ADMIN_USER
+First, we install the NVIDIA device plugin via Helm. This is what makes EKS aware of the GPU on the node — without it, you can't request `nvidia.com/gpu` as a resource in your pod spec.
+
+```python
+cluster.add_helm_chart(
+    "NvidiaDevicePlugin",
+    chart="nvidia-device-plugin",
+    repository="https://nvidia.github.io/k8s-device-plugin",
+    namespace="kube-system",
+    values={"tolerations": [{"key": "nvidia.com/gpu", "operator": "Exists", "effect": "NoSchedule"}]},
+)
+```
+
+Note the toleration on the plugin itself — it needs to run on the GPU node to expose the GPU, so it has to tolerate the taint we set earlier.
+
+Then the vLLM Deployment:
+
+```python
+cluster.add_manifest("VllmDeployment", {
+    ...
+    "spec": {
+        "tolerations": [{"key": "nvidia.com/gpu", "operator": "Exists", "effect": "NoSchedule"}],
+        "nodeSelector": {"workload": "gpu"},
+        "containers": [{
+            "image": "vllm/vllm-openai:latest",
+            "args": [
+                "--model", "meta-llama/Llama-3.1-8B-Instruct",
+                "--dtype", "float16",
+                "--max-model-len", "4096",
+            ],
+            "resources": {
+                "limits": {"nvidia.com/gpu": "1"},
+            },
+        }],
+    },
+})
+```
+
+A few things worth noting:
+
+- `nodeSelector: workload=gpu` pins the pod to the GPU node group
+- `nvidia.com/gpu: 1` requests exactly one GPU
+- `dtype: float16` keeps memory usage in check on the 16GB VRAM of `g4dn.xlarge`
+- `max-model-len: 4096` caps the context window to avoid OOM
+
+Finally, a LoadBalancer service to expose the endpoint publicly:
+
+```python
+cluster.add_manifest("VllmService", {
+    "kind": "Service",
+    "metadata": {
+        "annotations": {"service.beta.kubernetes.io/aws-load-balancer-type": "nlb"},
+    },
+    "spec": {
+        "type": "LoadBalancer",
+        "ports": [{"port": 80, "targetPort": 8000}],
+    },
+})
 ```
 
 ## Deploy
@@ -89,26 +174,61 @@ cdk bootstrap   # first time only
 cdk deploy --all
 ```
 
-This provisions the EKS cluster first (`EksStack`), then deploys vLLM on top of it (`VllmStack`).
+Wait for the vLLM pod to be ready (~5-10 minutes, model is downloaded from HuggingFace on first start):
 
-After deploy, grab the NLB endpoint:
+```bash
+kubectl get pods -w
+kubectl logs -f deployment/vllm
+```
+
+## Inference
+
+Once the pod is running, grab the NLB endpoint:
 
 ```bash
 kubectl get svc vllm -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
 ```
 
-Add it to `.env` as `VLLM_ENDPOINT_URL`, then run the chatbot:
+Check that the model is loaded:
 
 ```bash
-streamlit run src/app.py
+curl http://<nlb-endpoint>/v1/models
 ```
 
-## What's Next
+You should see something like:
 
-This is Phase 1. Phase 2 is packaging the chatbot and deploying it to EKS as well — so the whole thing runs in the cloud, not just the model.
+```json
+{
+  "object": "list",
+  "data": [{
+    "id": "meta-llama/Llama-3.1-8B-Instruct",
+    "object": "model",
+    "owned_by": "vllm"
+  }]
+}
+```
 
----
+Send it a prompt:
+
+```bash
+curl http://<nlb-endpoint>/v1/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "meta-llama/Llama-3.1-8B-Instruct",
+    "prompt": "What is MLOps?",
+    "max_tokens": 200,
+    "temperature": 0
+  }'
+```
+
+If you get a response back — the model is live. 🎉
 
 ![That's not enough](https://res.cloudinary.com/diunivf9n/image/upload/v1777184871/not-enough-batman_jpvyc6.gif)
+
+A working API endpoint is great, but typing `curl` commands is not exactly a great user experience. Let's build a proper chatbot UI on top of this.
+
+## Chatbot with Streamlit
+
+Coming soon.
 
 Aight. Thanks for reading this post, hope you found something useful 🚀
