@@ -1,7 +1,7 @@
-import os
-from aws_cdk import Stack, aws_eks as eks
+from aws_cdk import Stack, CfnOutput, aws_eks as eks
 from constructs import Construct
 
+import os
 
 class VllmStack(Stack):
 
@@ -11,7 +11,8 @@ class VllmStack(Stack):
         hf_token = os.environ.get("HF_TOKEN", "")
         model_id = "meta-llama/Meta-Llama-3.1-8B-Instruct"
 
-        # Install NVIDIA device plugin so EKS can schedule GPU workloads
+        # Install NVIDIA device plugin for GPU scheduling
+        # Using helm chart
         cluster.add_helm_chart(
             "NvidiaDevicePlugin",
             chart="nvidia-device-plugin",
@@ -78,3 +79,11 @@ class VllmStack(Stack):
                 "ports": [{"port": 80, "targetPort": 8000, "protocol": "TCP"}],
             },
         })
+
+        # Internal cluster URL for the vLLM service
+        self.vllm_url = os.environ.get("VLLM_URL", "http://vllm.default.svc.cluster.local:80")
+
+        CfnOutput(self, "VllmUrl",
+            value=self.vllm_url,
+            description="Internal vLLM service URL",
+        )
