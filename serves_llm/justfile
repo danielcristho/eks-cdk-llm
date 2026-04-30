@@ -1,0 +1,25 @@
+# Serves LLM - Task Runner
+# Run tasks with: just <task-name>
+
+# Display all available commands
+default:
+    @just --list
+
+# Deploy all stacks
+deploy:
+    cdk deploy --all
+
+# Deploy eks stack
+deploy-eks:
+    cdk diff
+    cdk deploy EksStack
+
+# Deploy vllm sttack
+deploy-vllm:
+    cdk diff
+    cdk deploy VllmStack
+
+# Destroy all stacks
+destroy:
+    cdk destroy --all
+
