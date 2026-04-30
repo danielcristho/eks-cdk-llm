@@ -1,6 +1,9 @@
 # Serves LLM - Task Runner
 # Run tasks with: just <task-name>
 
+# LOad dotenv
+set dotenv-load
+
 # Display all available commands
 default:
     @just --list
@@ -23,3 +26,14 @@ deploy-vllm:
 destroy:
     cdk destroy --all
 
+# Load kubeconfig
+load-kubeconfig:
+    aws eks update-kubeconfig --name ${CLUSTER_NAME} --region ${AWS_DEFAULT_REGION}
+
+# Get all node from tge cluster
+get-nodes:
+    kubectl get nodes -o wide
+
+# Get all pod
+get-pods:
+    kubectl get pod
