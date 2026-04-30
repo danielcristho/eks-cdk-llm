@@ -1,4 +1,3 @@
-import os
 from aws_cdk import (
     Stack,
     aws_eks as eks,
@@ -10,6 +9,7 @@ from aws_cdk import (
 from aws_cdk.lambda_layer_kubectl_v34 import KubectlV34Layer
 from constructs import Construct
 
+import os
 
 class EksStack(Stack):
 
@@ -22,7 +22,7 @@ class EksStack(Stack):
 
         self.cluster = eks.Cluster(
             self,
-            "EksCluster",
+            os.environ.get("CLUSTER_NAME", "EksCluster"),
             version=eks.KubernetesVersion.V1_34,
             vpc=vpc,
             default_capacity=0,
@@ -56,9 +56,9 @@ class EksStack(Stack):
             desired_size=1,
             min_size=0,
             max_size=2,
-            instance_types=[ec2.InstanceType("g4dn.xlarge")],
+            instance_types=[ec2.InstanceType("g4dn.2xlarge")],
             node_role=gpu_node_role,
-            ami_type=eks.NodegroupAmiType.AL2023_X86_64_NEURON,
+            ami_type=eks.NodegroupAmiType.AL2023_X86_64_NVIDIA,
             labels={"workload": "gpu"},
             taints=[
                 eks.TaintSpec(
