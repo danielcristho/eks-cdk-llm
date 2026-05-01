@@ -20,9 +20,12 @@ class EksStack(Stack):
 
         vpc = ec2.Vpc(self, "EksVpc", max_azs=2)
 
+        cluster_name = os.environ.get("CLUSTER_NAME", "eks-llm-cluster")
+
         self.cluster = eks.Cluster(
             self,
-            os.environ.get("CLUSTER_NAME", "EksCluster"),
+            cluster_name,
+            cluster_name=cluster_name,
             version=eks.KubernetesVersion.V1_34,
             vpc=vpc,
             default_capacity=0,
@@ -53,10 +56,10 @@ class EksStack(Stack):
 
         self.cluster.add_nodegroup_capacity(
             "GpuNodeGroup",
-            desired_size=1,
+            desired_size=0,
             min_size=0,
             max_size=2,
-            instance_types=[ec2.InstanceType("g4dn.2xlarge")],
+            instance_types=[ec2.InstanceType("g4dn.xlarge")],
             node_role=gpu_node_role,
             ami_type=eks.NodegroupAmiType.AL2023_X86_64_NVIDIA,
             labels={"workload": "gpu"},
