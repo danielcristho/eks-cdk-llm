@@ -1,4 +1,4 @@
-# EKS CDK MLOPS
+# EKS CDK LLM
 
 A repository for exploring LLM Serving and MLOps practices on AWS Kubernetes (EKS) using Infrastructure as Code (AWS CDK).
 
