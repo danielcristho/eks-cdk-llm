@@ -16,11 +16,11 @@ env = cdk.Environment(
     region=os.getenv("AWS_DEFAULT_REGION"),
 )
 
-eks_stack = EksStack(app, "EksStack", env=env)
+eks_stack = EksStack(app, "eks-stack", env=env)
 
 VllmStack(
     app,
-    "VllmStack",
+    "vllm-stack",
     cluster=eks_stack.cluster,
     model_bucket_name=eks_stack.model_bucket.bucket_name,
     env=env,

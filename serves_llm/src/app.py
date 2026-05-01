@@ -5,8 +5,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-VLLM_URL = os.environ["VLLM_ENDPOINT_URL"]
-MODEL_ID = "meta-llama/Meta-Llama-3.1-8B-Instruct"
+VLLM_URL = os.getenv("VLLM_URL")
+MODEL_ID = "hugging-quants/Meta-Llama-3.1-8B-Instruct-AWQ-INT4"
 
 client = OpenAI(base_url=f"{VLLM_URL}/v1", api_key="none")
 

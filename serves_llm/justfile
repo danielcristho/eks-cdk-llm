@@ -10,7 +10,7 @@ default:
 
 # Deploy all stacks
 deploy:
-    cdk deploy --require-approval never
+    cdk deploy --all
 
 # Deploy eks stack
 deploy-eks:

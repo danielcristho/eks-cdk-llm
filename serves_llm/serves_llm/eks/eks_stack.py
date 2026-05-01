@@ -56,9 +56,10 @@ class EksStack(Stack):
 
         self.cluster.add_nodegroup_capacity(
             "GpuNodeGroup",
-            desired_size=0,
+            desired_size=1,
             min_size=0,
             max_size=2,
+            disk_size=100,
             instance_types=[ec2.InstanceType("g4dn.xlarge")],
             node_role=gpu_node_role,
             ami_type=eks.NodegroupAmiType.AL2023_X86_64_NVIDIA,
@@ -81,6 +82,7 @@ class EksStack(Stack):
         self.model_bucket = s3.Bucket(
             self,
             "ModelBucket",
+            bucket_name=os.environ.get("AWS_BUCKET"),
             removal_policy=RemovalPolicy.RETAIN,
             block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
         )

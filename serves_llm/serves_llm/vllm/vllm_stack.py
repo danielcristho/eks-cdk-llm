@@ -8,17 +8,20 @@ class VllmStack(Stack):
     def __init__(self, scope: Construct, construct_id: str, cluster: eks.Cluster, model_bucket_name: str, **kwargs) -> None:
         super().__init__(scope, construct_id, **kwargs)
 
-        hf_token = os.environ.get("HF_TOKEN", "")
-        model_id = "meta-llama/Meta-Llama-3.1-8B-Instruct"
+        model_id = "hugging-quants/Meta-Llama-3.1-8B-Instruct-AWQ-INT4"
 
         # Install NVIDIA device plugin for GPU scheduling
         # Using helm chart
+        # Using nodeselector to ensure it runs on GPU node
         cluster.add_helm_chart(
             "NvidiaDevicePlugin",
             chart="nvidia-device-plugin",
             repository="https://nvidia.github.io/k8s-device-plugin",
             namespace="kube-system",
-            values={"tolerations": [{"key": "nvidia.com/gpu", "operator": "Exists", "effect": "NoSchedule"}]},
+            values={
+                "nodeSelector": {"workload": "gpu"},
+                "tolerations": [{"key": "nvidia.com/gpu", "operator": "Exists", "effect": "NoSchedule"}],
+            },
         )
 
         cluster.add_manifest("VllmDeployment", {
@@ -39,13 +42,14 @@ class VllmStack(Stack):
                             "args": [
                                 "--model", model_id,
                                 "--download-dir", "/model-cache",
-                                "--dtype", "float16",
+                                "--dtype", "half",
+                                "--quantization", "awq",
                                 "--max-model-len", "4096",
                             ],
                             "env": [
-                                {"name": "HF_TOKEN", "value": hf_token},
                                 {"name": "AWS_DEFAULT_REGION", "value": self.region},
                                 {"name": "MODEL_BUCKET", "value": model_bucket_name},
+                                {"name": "VLLM_PORT", "value": "8000"},
                             ],
                             "ports": [{"containerPort": 8000}],
                             "resources": {
