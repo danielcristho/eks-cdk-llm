@@ -104,6 +104,15 @@ self.model_bucket = s3.Bucket(self, "ModelBucket", ...)
 self.model_bucket.grant_read(gpu_node_role)
 ```
 
+:::note
+We will create those instances:
+
+| Node      | vCPU| Memory  |
+|-----------|-----|---------|
+| t3.medium | 2   | 4Gi     |
+| g4dn.xlarge | 4 | 8Gi     | 
+:::
+
 ### vLLM Stack
 
 The `VllmStack` takes the cluster from `EksStack` and deploys vLLM on top of it.
@@ -223,12 +232,73 @@ curl http://<nlb-endpoint>/v1/completions \
 
 If you get a response back — the model is live. 🎉
 
-![That's not enough](https://res.cloudinary.com/diunivf9n/image/upload/v1777184871/not-enough-batman_jpvyc6.gif)
-
 A working API endpoint is great, but typing `curl` commands is not exactly a great user experience. Let's build a proper chatbot UI on top of this.
+
+![That's not enough](https://res.cloudinary.com/diunivf9n/image/upload/v1777184871/not-enough-batman_jpvyc6.gif)
 
 ## Chatbot with Streamlit
 
-Coming soon.
+So let's built a simple chatbot using [Streamlit](https://github.com/streamlit/streamlit) that talks directly to the vLLM.
+
+The nice part? Since vLLM exposes an OpenAI-compatible API, we can just use the openai Python SDK without any efforts.
+
+### Setup
+
+Install the dependencies:
+
+```bash
+pip install streamlit openapi
+```
+
+Let's create a simple UI:
+
+```bash
+mkdir src
+touch src/app.y
+```
+
+```py title='app.py'
+import os
+import streamlit as st
+from openai import OpenAI
+from dotenv import load_dotenv
+
+load_dotenv()
+
+VLLM_URL = os.environ["VLLM_ENDPOINT_URL"]
+MODEL_ID = "meta-llama/Meta-Llama-3.1-8B-Instruct"
+
+client = OpenAI(base_url=f"{VLLM_URL}/v1", api_key="none")
+
+st.set_page_config(page_title="Llama 3 Chatbot", page_icon="🦙")
+st.title("🦙 Llama 3 Chatbot")
+st.caption("Powered by vLLM on EKS")
+
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+for msg in st.session_state.messages:
+    st.chat_message(msg["role"]).write(msg["content"])
+
+if prompt := st.chat_input("How is you day? Say something..."):
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    st.chat_message("user").write(prompt)
+
+    with st.chat_message("assistant"):
+        stream = client.chat.completions.create(
+            model=MODEL_ID,
+            messages=st.session_state.messages,
+            stream=True,
+        )
+        response = st.write_stream(chunk.choices[0].delta.content or "" for chunk in stream)
+
+    st.session_state.messages.append({"role": "assistant", "content": response})
+```
+
+Run the UI:
+
+```bash
+streamlit run app.py
+```
 
 Aight. Thanks for reading this post, hope you found something useful 🚀
