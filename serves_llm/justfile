@@ -10,7 +10,7 @@ default:
 
 # Deploy all stacks
 deploy:
-    cdk deploy --all
+    cdk deploy --require-approval never
 
 # Deploy eks stack
 deploy-eks:
@@ -25,6 +25,10 @@ deploy-vllm:
 # Destroy all stacks
 destroy:
     cdk destroy --all
+
+# CDK watch
+watch:
+    cdk watch
 
 # Load kubeconfig
 load-kubeconfig:
