@@ -50,7 +50,7 @@ class VllmStack(Stack):
                             "ports": [{"containerPort": 8000}],
                             "resources": {
                                 "limits": {"nvidia.com/gpu": "1"},
-                                "requests": {"memory": "20Gi", "cpu": "4"},
+                                "requests": {"memory": "12Gi", "cpu": "2"},
                             },
                             "volumeMounts": [{"name": "model-cache", "mountPath": "/model-cache"}],
                             "readinessProbe": {
