@@ -1,58 +1,63 @@
+# LLMs on EKS: Scaling with Ray & Karpenter
 
-# Welcome to your CDK Python project!
+Hi there, it's been 2 months.
 
-This is a blank project for CDK development with Python.
+Back in May, we deployed an LLM on Amazon EKS using vLLM. It gave me a much better understanding of what it takes to serve an LLM in production.
 
-The `cdk.json` file tells the CDK Toolkit how to execute your app.
+But after getting it up and running, one question kept coming to mind: What happens when a single GPU isn't enough?
 
-This project is set up like a standard Python project.  The initialization
-process also creates a virtualenv within this project, stored under the `.venv`
-directory.  To create the virtualenv it assumes that there is a `python3`
-(or `python` for Windows) executable in your path with access to the `venv`
-package. If for any reason the automatic creation of the virtualenv fails,
-you can create the virtualenv manually.
+![Lindalee Cat GIF](https://res.cloudinary.com/diunivf9n/image/upload/v1783432480/lindalee-cat_em4vzn.gif)
 
-To manually create a virtualenv on MacOS and Linux:
+Sure, we could add more replicas. But those replicas still need GPU nodes, and keeping expensive GPU instances running 24/7 just in case traffic spikes doesn't sound like a great idea.
 
-```
-$ python3 -m venv .venv
-```
+So in this post, we'll extend the previous setup by introducing [Ray](https://github.com/ray-project/ray) for distributed inference and [Karpenter for AWS](https://github.com/aws/karpenter-provider-aws) for dynamic GPU node provisioning, allowing the cluster to scale up (and back down) as demand changes.
 
-After the init process completes and the virtualenv is created, you can use the following
-step to activate your virtualenv.
+## TL;DR
 
-```
-$ source .venv/bin/activate
-```
+- Running distributed LLM inference with Ray
+- Autoscaling worker pods using KubeRay
+- Provisioning GPU nodes dynamically with Karpenter
+- Extending the previous vLLM deployment to scale on demand
 
-If you are a Windows platform, you would activate the virtualenv like this:
+## Why Ray?
 
-```
-% .venv\Scripts\activate.bat
-```
+Kubernetes can certainly scale pods, but serving LLMs comes with a few extra challenges. A single GPU can only handle so much, and once traffic grows, we need a way to distribute inference requests accross multiple workers instead of relying on a single pod.
 
-Once the virtualenv is activated, you can install the required dependencies.
+[Ray](https://github.com/ray-project/ray) is built for distirubuted AI workloads, making it natural fit here. I mainly chose it because:
 
-```
-$ pip install -r requirements.txt
-```
+- **Distributed inference** — spreads requests across multiple workers instead of relying on a single replica.
+- **Built-in autoscaler** — adjusts the number of Ray workers based on workload.
+- **Kubernetes-native** — integrates nicely with EKS through [KubeRay](https://github.com/ray-project/kuberay).
 
-At this point you can now synthesize the CloudFormation template for this code.
+Rather than treating each pod as an isolated deployment, Ray lets them work together as a single inference cluster.
 
-```
-$ cdk synth
-```
+## Why Karpenter?
 
-To add additional dependencies, for example other CDK libraries, just add
-them to your `requirements.txt` file and rerun the `python -m pip install -r requirements.txt`
-command.
+Ray can create additional worker pods, but it can't magically create GPU node. If every GPU node is already busy, those worker pods will remain in the 'Pending' state until Kubernetes finds available capacity.
 
-## Useful commands
+That's where [Karpenter](https://github.com/aws/karpenter-provider-aws) comes in:
 
- * `cdk ls`          list all stacks in the app
- * `cdk synth`       emits the synthesized CloudFormation template
- * `cdk deploy`      deploy this stack to your default AWS account/region
- * `cdk diff`        compare deployed stack with current state
- * `cdk docs`        open CDK documentation
+- **Provision nodes on demand** — launches new GPU instances when the cluster runs out of capacity.
+- **No fixed node groups** — avoids keeping idle GPU instances running all day.
+- **Scale back down** — automatically removes unused nodes to reduce infrastructure costs.
 
-Enjoy!
+Together, [Ray](https://github.com/ray-project/ray) and [Karpenter](https://github.com/aws/karpenter-provider-aws) solve different parts of the scaling problem. Ray decides *when* more workers are needed, while Karpenter makes sure there's actually somewhere for those workers to run.
+
+## What We Tryna Build
+
+This time, the architecture is a little different.
+
+Instead of running a single vLLM pod, we'll build a small Ray cluster on Amazon EKS. Ray will distribute inference requests across multiple workers, while Karpenter automatically provisions GPU nodes whenever the cluster needs more capacity.
+
+The flow looks like this:
+
+- User sends an inference request
+- Ray routes the request to an available worker
+- Workers run vLLM to generate responses
+- Ray creates additional workers as traffic increases
+- Karpenter provisions new GPU nodes when the cluster runs out of capacity
+- Unused workers and nodes are removed once traffic drops
+
+References:
+
+- [AWS Labs: KubeRay Operator Add-on](https://github.com/awslabs/cdk-eks-blueprints/blob/main/docs/addons/kuberay-operator.md)
