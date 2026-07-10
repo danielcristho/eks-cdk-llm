@@ -1,12 +1,12 @@
 # LLMs on EKS: Scaling with Ray & Karpenter
 
-Hi there, it's been 2 months.
-
-Back in May, we deployed an LLM on Amazon EKS using vLLM. It gave me a much better understanding of what it takes to serve an LLM in production.
+Hi there, it's been 2 months. Back in May, we deployed an LLM on Amazon EKS using vLLM. It gave me a much better understanding of what it takes to serve an LLM in production.
 
 But after getting it up and running, one question kept coming to mind: *What happens when a single GPU isn't enough?*
 
 ![Lindalee Cat GIF](https://res.cloudinary.com/diunivf9n/image/upload/v1783432480/lindalee-cat_em4vzn.gif)
+
+> Source: [tenor.com](https://tenor.com/view/lindalee-cat-whathappened-gif-18419219)
 
 Sure, we could add more replicas. But those replicas still need GPU nodes, and keeping expensive GPU instances running 24/7 just in case traffic spikes doesn't sound like a great idea.
 
@@ -27,7 +27,7 @@ Kubernetes can certainly scale pods, but serving LLMs comes with a few extra cha
 
 - **Distributed inference** — spreads requests across multiple workers instead of relying on a single replica.
 - **Built-in autoscaler** — adjusts the number of Ray workers based on workload.
-- **Kubernetes-native** — integrates nicely with EKS through [KubeRay](https://github.com/ray-project/kuberay).
+- **Kubernetes-native** — integrates nicely with EKS through [KubeRay: Ray on Kubernetes](https://github.com/ray-project/kuberay).
 
 Rather than treating each pod as an isolated deployment, Ray lets them work together as a single inference cluster.
 
@@ -58,7 +58,7 @@ The flow looks like this:
 - Karpenter provisions new GPU nodes when the cluster runs out of capacity
 - Unused workers and nodes are removed once traffic drops
 
-![Project Arch](https://res.cloudinary.com/diunivf9n/image/upload/v1783517665/project_arch_servesllm_g8whow.webp)
+![Project Arch](https://res.cloudinary.com/diunivf9n/image/upload/v1783667929/scale_llm_arch_cdoj0l.webp)
 
 ### The Stack
 
@@ -75,7 +75,7 @@ We'll reuse most of the infrastructure from the previous post. This time, we're 
 
 You can see the stack below.
 
-![Stack Overview](https://res.cloudinary.com/diunivf9n/image/upload/v1783518249/scale_llm_xr64jp.webp)
+![Stack Overview](https://res.cloudinary.com/diunivf9n/image/upload/v1783686659/scale_llm_xr64jp.webp)
 
 ## The Code
 
@@ -499,17 +499,12 @@ kubectl run -n kuberay checkstatus --image=curlimages/curl:8.10.1 --restart=Neve
 # look at .applications.vllm.status and .message
 ```
 
-What that turned up, in the order they surfaced:
-
+:::note[What that turned up, in the order they surfaced:]
 - **`working_dir: /serve-scripts` rejected.** Ray Serve's `runtime_env.working_dir` only accepts remote URIs (`file://`, `s3://`, …), not a bare local path — even though that's exactly where the ConfigMap mounts the script. Fix: drop `working_dir` entirely, set `PYTHONPATH: /serve-scripts` under `runtime_env.env_vars` instead, so `import_path: serve_vllm:build_app` still resolves.
 - **`num_replicas` + `autoscaling_config` together.** Ray Serve won't accept a fixed replica count alongside an autoscaling config — drop `num_replicas`, autoscaling owns replica count now.
-- **`vllm==0.8.5` forbids `ray==2.44.*`.** The runtime_env's `pip: [vllm==0.8.5]` pulls in a newer Ray by default, and Ray refuses to run a pip-isolated env whose Ray version doesn't match the cluster's. vLLM 0.8.5 also explicitly excludes `2.44.*`, which is what the cluster's `rayproject/ray:2.44.1-gpu` image runs. Pinning `ray[serve]==2.44.1` in the pip list just trades one error for another — had to move the whole cluster to `rayproject/ray:2.43.0-gpu` (image *and* `rayVersion` field) and pin `ray[serve]==2.43.0` instead.
-- **Worker "OOM" that wasn't OOM.** Once the pip env resolved, the build task started crashing with `WorkerCrashedError` and a log line blaming "K8s pod memory limits." The node group (`t3.medium`, 4GiB) got bumped to `t3.large` and the head's memory limit from 4Gi to 6Gi — crash didn't go away. The cgroup's own `memory.events` showed `oom_kill: 0` the whole time; it was never actually OOM.
-- **The real cause: NumPy 2.x vs. a NumPy-1.x-built pyarrow.** `vllm`'s pip install upgrades NumPy to 2.x, which breaks the base image's `pyarrow` (compiled against NumPy 1.x, used internally by Ray's own serialization). Every worker crashed on `import pyarrow` with `AttributeError: _ARRAY_API not found`. Fix: add `numpy<2` to the pip list.
-- **`build_app()`'s signature was wrong.** Past all the environment issues, Ray Serve finally tried to actually call the app builder — `TypeError: Application builder functions should take exactly one parameter, a dictionary`. `serve_vllm.py`'s `build_app` took `model`, `dtype`, etc. as separate keyword arguments instead of one `args: dict`. Straightforward fix, but easy to miss since nothing catches it until the app actually deploys.
 - **KubeRay caches `serveConfigV2` by its own text, not by what's mounted.** Editing `serve_vllm.py` alone (the ConfigMap) didn't get picked up — operator logs showed `"shouldUpdate": false, reason: "Current V2 Serve config matches cached Serve config."` on every reconcile. It only re-submits when the YAML string itself changes. Fix: fold a hash of the script into an (unused) arg in `args:`, so any script edit changes the YAML and busts the cache automatically.
 - **The NVIDIA device plugin never scheduled at all.** With the app finally `RUNNING`, the GPU worker pod sat `Pending` — `Insufficient nvidia.com/gpu`. The `nvidia-device-plugin` Helm chart ships a default `nodeAffinity` requiring an NFD/GPU-Operator label (`nvidia.com/gpu.present`, among others) that nothing in this cluster sets, so it never matched our Karpenter-provisioned node. Passing `affinity: {}` to override it turned out to be a no-op (Helm doesn't let an empty map clear a chart's default nested value) — the actual fix was adding `nvidia.com/gpu.present` and `nvidia.com/mps.capable` labels directly on the Karpenter GPU `NodePool`'s node template.
-- **...which then collided with itself.** The chart actually renders *two* DaemonSets (the plugin and an MPS control daemon), and CDK's auto-generated Helm release name was long enough that both DaemonSets' names got silently truncated to the same 63-character Kubernetes limit — one clobbered the other, and the survivor happened to be the MPS daemon, not the plugin. Passing an explicit short `release=` name to `add_helm_chart(...)` fixed it; the leftover daemonset from the old release name had to be deleted by hand since changing the release name doesn't clean up the old one.
+:::
 
 None of this was visible from `kubectl get pods` — the head and worker pods looked healthy the entire time. The only way to see any of it was polling `/api/serve/applications/` directly.
 
@@ -558,8 +553,156 @@ That's the whole loop: no GPU node running until there's real demand for one, an
 Run `cdk destroy --all` when you're done. Karpenter-provisioned nodes aren't tracked by CloudFormation the same way a static node group is, so double check with `kubectl get nodes` and the EC2 console that nothing GPU-shaped got left behind.
 :::
 
+## Inference
+
+Nothing fancy here yet — just a couple of plain `curl` requests straight to the NLB, one replica, one request at a time. The point right now is just proving the whole chain (NLB → Ray Serve → vLLM → GPU worker) actually answers. Scaling multiple replicas under concurrent load is its own section further down.
+
+Grab the NLB endpoint:
+
+```bash
+$ kubectl get svc vllm-nlb -n kuberay -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+a8ad896440d644814b07e7628475888d-0452cb7d4da839df.elb.us-east-1.amazonaws.com
+```
+
+Check the model's loaded:
+
+```bash
+$ curl http://<nlb-endpoint>/v1/models
+{"object":"list","data":[{"id":"hugging-quants/Meta-Llama-3.1-8B-Instruct-AWQ-INT4","object":"model","owned_by":"vllm"}]}
+```
+
+That one worked on the first try. Sending an actual prompt didn't:
+
+```bash
+curl http://<nlb-endpoint>/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "hugging-quants/Meta-Llama-3.1-8B-Instruct-AWQ-INT4",
+    "messages": [{"role": "user", "content": "What is CAP theorem?"}],
+    "max_tokens": 150
+  }'
+```
+
+`/v1/models` only reads `model_config`, but `/v1/chat/completions` builds vLLM's `OpenAIServingChat` on first use — and that's where it broke, twice, both API changes in this vLLM version that nothing catches until a real chat request hits it:
+
+- `AsyncEngineArgs(worker_use_ray=False)` — `worker_use_ray` no longer exists; dropped it (single GPU, vLLM was never going to spin up its own Ray workers anyway).
+- `OpenAIServingChat(..., served_model_names=[...])` — that argument's gone too, replaced by a required `OpenAIServingModels` object built from a `BaseModelPath`.
+
+With both fixed, the same request goes through. Time for a slightly more fun prompt than usual:
+
+```bash
+curl http://<nlb-endpoint>/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "hugging-quants/Meta-Llama-3.1-8B-Instruct-AWQ-INT4",
+    "messages": [{"role": "user", "content": "Three boxes are labeled: '\''APPLES'\'', '\''ORANGES'\'', and '\''APPLES AND ORANGES'\''. All labels are incorrect. If you can only pull one fruit from one box, how do you correctly label all boxes? Show me the steps"}],
+    "max_tokens": 512
+  }'
+```
+
+```json
+{
+  "id": "chatcmpl-89ac1890-c23e-4bb7-85a1-0fcef1f405b8",
+  "object": "chat.completion",
+  "choices": [{
+    "message": {
+      "role": "assistant",
+      "content": "To correctly label all the boxes, we need to find a fruit that is unique to one box and can be used to determine the correct labels.\n\nStep 1: \nPull a fruit from the 'APPLES AND ORANGES' box. Since it's labeled incorrectly, it might contain either an apple or an orange. Let's assume we pull an orange from this box.\n\nStep 2: \nNow, we have an orange from the 'APPLES AND ORANGES' box. We know that the 'ORANGES' box cannot be the correct label for this box since we already have an orange from it...\n\n[...]\n\nHere are the correct labels for the boxes:\n\n- 'APPLES AND ORANGES' box: APPLES AND ORANGES\n- 'ORANGES' box: APPLES\n- 'APPLES' box: ORANGES AND APPLES"
+    },
+    "finish_reason": "stop"
+  }],
+  "usage": {"prompt_tokens": 84, "completion_tokens": 509, "total_tokens": 593}
+}
+```
+
+A real round trip — request in, answer out, routed through Ray Serve and served off a GPU node that didn't exist a couple minutes earlier. Worth noting: the reasoning here is actually wrong (it ends up relabeling boxes with labels that were never on any box to begin with, and the trick only ever requires pulling from the "APPLES AND ORANGES" box) — that's the 8B AWQ-quantized model being a bit small for multi-step logic puzzles, not an infra problem. The pipe worked; the model just isn't that smart.
+
+### Does It Actually Scale?
+
+Same idea as the previous post — a Streamlit chatbot on top of the OpenAI-compatible endpoint, chatting away just fine:
+
+![Streamlit Chatbot](https://res.cloudinary.com/diunivf9n/image/upload/v1783682909/llma_streamlit1_rxrzga.png)
+
+![Streamlit Chatbot Story](https://res.cloudinary.com/diunivf9n/image/upload/v1783682435/Screenshot_from_2026-07-10_17-59-41_uzinsk.png)
+
+But that's also exactly why it's the wrong tool for checking whether autoscaling actually works. A chat UI sends one message, waits for the full response, then sends the next — always one request in flight, never more. `target_ongoing_requests: 2` only kicks in once more requests are *in flight simultaneously* than a single replica can comfortably handle, and no amount of typing quickly into Streamlit will ever produce that. So to actually see the autoscaler react, 8 requests went out at once via `curl` instead of one at a time through the UI:
+
+```bash
+for i in 1 2 3 4 5 6 7 8; do
+  curl -s -o resp$i.json -w "req$i: %{http_code} %{time_total}s\n" \
+    -X POST http://<nlb-endpoint>/v1/chat/completions \
+    -H "Content-Type: application/json" -d @q$i.json &
+done
+wait
+```
+
+```
+req4: 200 16.97s
+req7: 200 17.14s
+req6: 200 17.13s
+req5: 200 17.14s
+req2: 200 17.31s
+req1: 200 31.27s
+req3: 200 32.33s
+req8: 200 32.31s
+```
+
+Five came back in ~17s — that's `max_ongoing_requests: 5` per replica, so the first five just ran. The other three queued behind them and took almost double, ~32s, waiting for a slot to free up. Meanwhile, this showed up in another terminal:
+
+```bash
+$ kubectl get pods -n kuberay
+vllm-raycluster-...-gpu-workers-worker-4kdlf   0/1   Pending   0   1s
+```
+
+A second worker pod, right on cue:
+
+![kubectl get pods -w](https://res.cloudinary.com/diunivf9n/image/upload/v1783682329/Screenshot_from_2026-07-10_18-10-14_srntdb.png)
+
+Watched through `Pending` -> `Init` -> `PodInitializing`-> `Running`, while a second GPU node shows up right alongside it:
+
+![kubectl get nodes -w](https://res.cloudinary.com/diunivf9n/image/upload/v1783682362/Screenshot_from_2026-07-10_18-06-46_ebf2kc.png)
+
+Timing it out end to end, from Ray Serve first asking for a 2nd replica to that replica actually serving:
+
+| Stage | Time | Elapsed |
+|---|---|---|
+| Ray Serve requests a 2nd replica (worker pod `Pending`) | 11:02:29 | — |
+| Karpenter's new GPU node `Ready` | 11:03:17 | ~48s |
+| Worker pod container `Running` (scheduled + image pulled) | 11:06:19 | ~3m |
+| vLLM finishes loading and the 2nd replica goes `RUNNING` | 11:11:56 | ~5m37s |
+| **Total, request to serving** | | **~9m27s** |
+
+Provisioning the node itself was the fast part. The two things that actually ate the clock were pulling the ~6GB `rayproject/ray:2.43.0-gpu` image on a brand new node (~3 minutes) and vLLM's own model load + CUDA graph capture (~5.5 minutes) — the same cold-start cost from [Deploy](#deploy), just paid a second time for the second replica. This is roughly the real cost of "scale on demand" here: cheap to provision, ~9-10 minutes before a new GPU replica is actually useful. Fine for a slow ramp in traffic, not something you'd want to lean on for a sudden spike.
+
+If that ~9m27s ever needed to come down, none of it's Karpenter's fault — the node itself was ready in under a minute. The obvious next levers:
+
+- **Bake a custom AMI with the image pre-pulled.** Most of the ~3 minutes is `containerd` pulling a ~6GB image on a brand new instance. An AMI built with `rayproject/ray:2.43.0-gpu` already cached (EC2 Image Builder, or just a snapshot) turns that into a no-op.
+- **Skip CUDA graph capture.** `enforce_eager=True` on the `AsyncEngineArgs` trades a bit of per-request latency for skipping the ~37s graph capture step entirely — worth it if replicas come and go often.
+- **Actually seed the S3 model cache.** The `initContainer` from [vLLM Stack](#vllm-stack) is already wired up, it just never got seeded this session — a populated bucket turns the ~37s HuggingFace download into a same-region S3 pull instead.
+- **Keep one warm replica instead of scaling from zero.** `min_replicas: 1` means one GPU node running 24/7 (some idle cost) in exchange for the first request never paying this ~9 minute tax — a reasonable trade if traffic is bursty but rarely fully idle.
+
+None of these were worth doing for this post, they only pay off under real, sustained traffic, but they're the obvious next lever if `~9m27s` to scale up ever becomes the actual bottleneck.
+
+## Conclusion
+
+The opening question was: what happens when a single GPU isn't enough? Now there's an actual answer: Ray Serve notices, KubeRay asks for another node, Karpenter provisions a `g4dn.xlarge`, and ~9 minutes later there's a second replica taking traffic — no capacity sitting around unused, no manual intervention.
+
+That ~9 minutes is also the honest part of this post. Autoscaling GPU inference isn't free of cold starts, it just moves them from "always paid, all day" to "paid once, on demand." Whether that trade is worth it depends entirely on how bursty the traffic actually is — fine for a slow ramp, not something to lean on for a sudden spike.
+
+The bigger lesson, though, was everywhere in [Deploy](#deploy): almost none of the real bugs were infrastructure problems. CDK deployed cleanly every time. It was Ray Serve config quirks, a Helm chart's assumptions about a cluster we don't run, and vLLM API signatures that moved between versions — all invisible from `kubectl get pods`, all only surfacing once something actually tried to run. Autoscaling on Kubernetes is very achievable; getting there means budgeting time for exactly this kind of debugging, not just writing the YAML.
+
+:::danger[Clean Up Resources]
+Run `cdk destroy --all` when you're done. Karpenter-provisioned nodes aren't tracked by CloudFormation the same way a static node group is — double check `kubectl get nodes` and the EC2 console after destroying to make sure nothing GPU-shaped got left behind.
+
+![EC2 Instances remove](https://res.cloudinary.com/diunivf9n/image/upload/v1783683250/b7844d09-a828-4183-a497-286d5e96d10f.png)
+:::
+
+Aight. Thanks for reading this one too 🚀
+
 References:
 
 - [AWS Labs: KubeRay Operator Add-on](https://github.com/awslabs/cdk-eks-blueprints/blob/main/docs/addons/kuberay-operator.md)
+- [KubeRay: Ray on Kubernetes](https://docs.ray.io/en/latest/cluster/kubernetes/index.html)
+- [hugging-quants/Meta-Llama-3.1-8B-Instruct-AWQ-INT4](https://huggingface.co/hugging-quants/Meta-Llama-3.1-8B-Instruct-AWQ-INT4)
 - [Flaticon: User Icon](https://www.flaticon.com/free-icon/user_6175043)
 - [TypingMind: LLaMA Model Icon](https://custom.typingmind.com/tools/model-icons/llama)
