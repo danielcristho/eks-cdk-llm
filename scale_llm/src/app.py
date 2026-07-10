@@ -12,7 +12,7 @@ client = OpenAI(base_url=f"{VLLM_URL}/v1", api_key="none")
 
 st.set_page_config(page_title="Llama 3 Chatbot", page_icon="🦙")
 st.title("🦙 Llama 3 Chatbot")
-st.caption("Powered by vLLM on Ray Serve, autoscaled via Karpenter")
+st.caption("Powered by vLLM was built on top of Ray cluster, autoscaled via Karpenter")
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
