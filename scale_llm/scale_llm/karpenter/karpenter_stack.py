@@ -1,7 +1,6 @@
 from aws_cdk import Stack, aws_eks as eks, aws_iam as iam
 from constructs import Construct
 
-
 class KarpenterStack(Stack):
 
     def __init__(
@@ -12,6 +11,7 @@ class KarpenterStack(Stack):
         cluster_name: str,
         karpenter_controller_role: iam.Role,
         karpenter_node_role: iam.Role,
+        cluster_security_group_id: str,
         **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
@@ -25,7 +25,9 @@ class KarpenterStack(Stack):
             namespace="karpenter",
             create_namespace=True,
             values={
+                # Name pinned, must match the IRSA trust policy's expected SA name
                 "serviceAccount": {
+                    "name": "karpenter",
                     "annotations": {
                         "eks.amazonaws.com/role-arn": karpenter_controller_role.role_arn,
                     }
@@ -43,7 +45,6 @@ class KarpenterStack(Stack):
         )
 
         # EC2NodeClass — defines AMI, subnets, and security groups for GPU nodes
-        # Subnets and SGs are discovered via the karpenter.sh/discovery tag set in EksStack
         ec2_node_class = cluster.add_manifest(
             "GpuEC2NodeClass",
             {
@@ -56,14 +57,13 @@ class KarpenterStack(Stack):
                         {"tags": {"karpenter.sh/discovery": cluster_name}}
                     ],
                     "securityGroupSelectorTerms": [
-                        {"tags": {"karpenter.sh/discovery": cluster_name}}
+                        {"id": cluster_security_group_id}
                     ],
                     "role": karpenter_node_role.role_name,
                     "blockDeviceMappings": [
                         {
                             "deviceName": "/dev/xvda",
                             "ebs": {
-                                # 100 GB — vLLM image + model cache needs headroom
                                 "volumeSize": "100Gi",
                                 "volumeType": "gp3",
                                 "encrypted": True,
@@ -90,7 +90,13 @@ class KarpenterStack(Stack):
                 "spec": {
                     "template": {
                         "metadata": {
-                            "labels": {"workload": "gpu"},
+                            # gpu.present/mps.capable satisfy the nvidia-device-plugin chart's
+                            # own node affinity/selector; nothing else sets these labels here
+                            "labels": {
+                                "workload": "gpu",
+                                "nvidia.com/gpu.present": "true",
+                                "nvidia.com/mps.capable": "true",
+                            },
                         },
                         "spec": {
                             "nodeClassRef": {
@@ -100,7 +106,6 @@ class KarpenterStack(Stack):
                             },
                             "requirements": [
                                 {
-                                    
                                     "key": "node.kubernetes.io/instance-type",
                                     "operator": "In",
                                     "values": ["g4dn.xlarge"],
@@ -130,10 +135,9 @@ class KarpenterStack(Stack):
                             ],
                         },
                     },
-                    # 2× g4dn.xlarge = 8 vCPU
-                    "limits": {"nvidia.com/gpu": "2"},
+                    "limits": {"nvidia.com/gpu": "2"},  # 2 × g4dn.xlarge, matches account quota
                     "disruption": {
-                        # Terminate idle GPU nodes after 30s, try to save cost :)
+                        # Terminate idle GPU nodes after 30s :)
                         "consolidationPolicy": "WhenEmpty",
                         "consolidateAfter": "30s",
                     },

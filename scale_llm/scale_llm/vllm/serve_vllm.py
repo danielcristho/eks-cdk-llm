@@ -1,15 +1,11 @@
 """
-serve_vllm.py — Ray Serve entrypoint for vLLM.
-
+Ray Serve entrypoint for vLLM.
 Mounted into each Ray worker at /serve-scripts/serve_vllm.py via ConfigMap.
-Ray Serve loads it via: import_path: serve_vllm:build_app
 """
 
-import asyncio
 from typing import Optional
 
-# Runtime imports — only available inside the Ray worker container.
-# try/except lets this file be imported at CDK synth time for ConfigMap embedding.
+# Runtime imports, available inside the ray worker container.
 try:
     from fastapi import FastAPI, Request
     from fastapi.responses import StreamingResponse
@@ -17,6 +13,7 @@ try:
     from vllm import AsyncLLMEngine, AsyncEngineArgs
     from vllm.entrypoints.openai.protocol import ChatCompletionRequest
     from vllm.entrypoints.openai.serving_chat import OpenAIServingChat
+    from vllm.entrypoints.openai.serving_models import OpenAIServingModels, BaseModelPath
     _RUNTIME_IMPORTS_OK = True
 except ImportError:
     _RUNTIME_IMPORTS_OK = False
@@ -24,6 +21,7 @@ except ImportError:
 if _RUNTIME_IMPORTS_OK:
     app = FastAPI(title="vLLM on Ray Serve", version="1.0.0")
 
+    # min_replicas=0: no GPU worker exists until a request actually needs one
     @serve.deployment(
         ray_actor_options={"num_gpus": 1, "memory": 12 * 1024 ** 3},
         autoscaling_config={
@@ -52,20 +50,28 @@ if _RUNTIME_IMPORTS_OK:
                 max_model_len=max_model_len,
                 download_dir=download_dir,
                 gpu_memory_utilization=gpu_memory_utilization,
-                # Disable vLLM's internal Ray to avoid conflict with KubeRay
-                worker_use_ray=False,
             )
             self.engine = AsyncLLMEngine.from_engine_args(engine_args)
             self._serving_chat: Optional[OpenAIServingChat] = None
 
+        # Built lazily on first request, not __init__, since it needs the engine's model_config
         async def _get_serving_chat(self) -> OpenAIServingChat:
             if self._serving_chat is None:
                 model_config = await self.engine.get_model_config()
+                # OpenAIServingModels replaces the old served_model_names= kwarg in this vLLM version
+                models = OpenAIServingModels(
+                    engine_client=self.engine,
+                    model_config=model_config,
+                    base_model_paths=[BaseModelPath(name=model_config.model, model_path=model_config.model)],
+                )
                 self._serving_chat = OpenAIServingChat(
                     self.engine,
                     model_config,
-                    served_model_names=[model_config.model],
+                    models,
                     response_role="assistant",
+                    request_logger=None,
+                    chat_template=None,
+                    chat_template_content_format="auto",
                 )
             return self._serving_chat
 
@@ -90,20 +96,13 @@ if _RUNTIME_IMPORTS_OK:
             return generator
 
 
-def build_app(
-    model: str,
-    dtype: str = "half",
-    quantization: str = "awq",
-    max_model_len: int = 4096,
-    download_dir: str = "/model-cache",
-    gpu_memory_utilization: float = 0.90,
-):
+def build_app(args: dict):
     """Entry point called by Ray Serve — args map to the serveConfigV2 args block."""
     return VLLMDeployment.bind(
-        model=model,
-        dtype=dtype,
-        quantization=quantization,
-        max_model_len=max_model_len,
-        download_dir=download_dir,
-        gpu_memory_utilization=gpu_memory_utilization,
+        model=args["model"],
+        dtype=args.get("dtype", "half"),
+        quantization=args.get("quantization", "awq"),
+        max_model_len=args.get("max_model_len", 4096),
+        download_dir=args.get("download_dir", "/model-cache"),
+        gpu_memory_utilization=args.get("gpu_memory_utilization", 0.90),
     )

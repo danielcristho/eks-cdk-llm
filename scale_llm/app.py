@@ -34,6 +34,7 @@ karpenter_stack = KarpenterStack(
     cluster_name=eks_stack.cluster_name,
     karpenter_controller_role=eks_stack.karpenter_controller_role,
     karpenter_node_role=eks_stack.karpenter_node_role,
+    cluster_security_group_id=eks_stack.cluster_security_group_id,
     env=env,
 )
 karpenter_stack.add_dependency(eks_stack)
