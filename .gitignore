@@ -1,3 +1,6 @@
+# Personal scratch notes, not part of any post
+.brainstorm/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
