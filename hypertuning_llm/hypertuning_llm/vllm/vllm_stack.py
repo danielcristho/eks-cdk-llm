@@ -15,7 +15,8 @@ class VllmStack(Stack):
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
 
-        model_id = "hugging-quants/Meta-Llama-3.1-8B-Instruct-AWQ-INT4"
+        # model A: pipeline_llm's output. deploy_model in the pipeline swaps this for a newer run's model
+        model_uri = f"s3://{model_bucket_name}/pipeline-output/latest"
         script_sha = hashlib.sha256(_load_serve_script().encode()).hexdigest()[:12]
         nvidia_plugin = cluster.add_helm_chart(
             "NvidiaDevicePlugin",
@@ -73,8 +74,9 @@ class VllmStack(Stack):
                         "        - numpy<2\n"             
                         "      env_vars:\n"
                         "        PYTHONPATH: /serve-scripts\n"
-                        f"    args:\n"
-                        f"      model: \"{model_id}\"\n"
+                        "    args:\n"
+                        "      model: /model-cache/current\n"
+                        "      served_model_name: qwen-lora\n"
                         "      dtype: half\n"
                         "      quantization: awq\n"
                         "      max_model_len: 4096\n"
@@ -84,13 +86,29 @@ class VllmStack(Stack):
                         "      - name: VLLMDeployment\n"
                         "        max_ongoing_requests: 5\n"
                         "        autoscaling_config:\n"
-                        "          min_replicas: 0\n"
+                        # 1, not 0: a new cluster takes traffic once a replica has the new model loaded
+                        "          min_replicas: 1\n"
                         "          max_replicas: 2\n"  # set max 2 × g4dn.xlarge
                         "          target_ongoing_requests: 2\n"
                         "        ray_actor_options:\n"
                         "          num_gpus: 1\n"
                         "          memory: 12288\n"
                     ),
+                    # KubeRay owns this Service and repoints it at the new cluster during an upgrade;
+                    # a standalone Service selecting role=ray-head would hit both clusters' heads mid-rollout
+                    "serveService": {
+                        "metadata": {
+                            "name": "vllm-nlb",
+                            "annotations": {
+                                "service.beta.kubernetes.io/aws-load-balancer-type": "nlb",
+                                "service.beta.kubernetes.io/aws-load-balancer-scheme": "internet-facing",
+                            },
+                        },
+                        "spec": {
+                            "type": "LoadBalancer",
+                            "ports": [{"name": "serve", "port": 80, "targetPort": 8000, "protocol": "TCP"}],
+                        },
+                    },
                     "rayClusterConfig": {
                         "rayVersion": "2.43.0",
                         "enableInTreeAutoscaling": True,
@@ -154,16 +172,17 @@ class VllmStack(Stack):
                                         "terminationGracePeriodSeconds": 120,
                                         "initContainers": [
                                             {
-                                                # Pull a cached copy of the model from S3 before vLLM starts
+                                                # MODEL_URI lives in rayClusterConfig, so changing it makes KubeRay
+                                                # build a new cluster and switch traffic once it is ready
                                                 "name": "model-cache-sync",
                                                 "image": "amazon/aws-cli:2.17.62",
                                                 "command": [
                                                     "sh", "-c",
-                                                    "aws s3 sync s3://$MODEL_BUCKET/model-cache /model-cache || true",
+                                                    "aws s3 sync \"$MODEL_URI\" /model-cache/current",
                                                 ],
                                                 "env": [
                                                     {"name": "AWS_DEFAULT_REGION", "value": self.region},
-                                                    {"name": "MODEL_BUCKET",       "value": model_bucket_name},
+                                                    {"name": "MODEL_URI",          "value": model_uri},
                                                 ],
                                                 "volumeMounts": [
                                                     {"name": "model-cache", "mountPath": "/model-cache"},
@@ -209,31 +228,6 @@ class VllmStack(Stack):
         )
         ray_service.node.add_dependency(serve_configmap)
         ray_service.node.add_dependency(nvidia_plugin)
-
-        # NLB to expose the OpenAI API
-        nlb_svc = cluster.add_manifest(
-            "VllmNlbService",
-            {
-                "apiVersion": "v1",
-                "kind": "Service",
-                "metadata": {
-                    "name": "vllm-nlb",
-                    "namespace": "kuberay",
-                    "annotations": {
-                        "service.beta.kubernetes.io/aws-load-balancer-type": "nlb",
-                        "service.beta.kubernetes.io/aws-load-balancer-scheme": "internet-facing",
-                    },
-                },
-                "spec": {
-                    "type": "LoadBalancer",
-                    "selector": {"role": "ray-head"},
-                    "ports": [
-                        {"name": "http", "port": 80, "targetPort": 8000, "protocol": "TCP"}
-                    ],
-                },
-            },
-        )
-        nlb_svc.node.add_dependency(ray_service)
 
         CfnOutput(
             self, "VllmEndpointNote",

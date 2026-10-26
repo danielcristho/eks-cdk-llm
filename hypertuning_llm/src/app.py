@@ -6,12 +6,12 @@ from dotenv import load_dotenv
 load_dotenv()
 
 VLLM_URL = os.getenv("VLLM_URL")
-MODEL_ID = "hugging-quants/Meta-Llama-3.1-8B-Instruct-AWQ-INT4"
+# stable name across rollouts; the weights behind it change, the client does not
 
 client = OpenAI(base_url=f"{VLLM_URL}/v1", api_key="none")
 
-st.set_page_config(page_title="Llama 3 Chatbot", page_icon="🦙")
-st.title("🦙 Llama 3 Chatbot")
+st.set_page_config(page_title="Qwen LoRA Chatbot", page_icon="🤖")
+st.title("🤖 Qwen LoRA Chatbot")
 st.caption("Powered by vLLM was built on top of Ray cluster, autoscaled via Karpenter")
 
 if "messages" not in st.session_state:
@@ -26,7 +26,7 @@ if prompt := st.chat_input("How is your day? Say something..."):
 
     with st.chat_message("assistant"):
         stream = client.chat.completions.create(
-            model=MODEL_ID,
+            model="qwen-lora",
             messages=st.session_state.messages,
             stream=True,
         )

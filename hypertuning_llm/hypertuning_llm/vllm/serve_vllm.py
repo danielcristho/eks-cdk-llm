@@ -42,9 +42,11 @@ if _RUNTIME_IMPORTS_OK:
             max_model_len: int = 4096,
             download_dir: str = "/model-cache",
             gpu_memory_utilization: float = 0.90,
+            served_model_name: Optional[str] = None,
         ):
             engine_args = AsyncEngineArgs(
                 model=model,
+                served_model_name=served_model_name,
                 dtype=dtype,
                 quantization=quantization,
                 max_model_len=max_model_len,
@@ -60,7 +62,7 @@ if _RUNTIME_IMPORTS_OK:
                 models = OpenAIServingModels(
                     engine_client=self.engine,
                     model_config=model_config,
-                    base_model_paths=[BaseModelPath(name=model_config.model, model_path=model_config.model)],
+                    base_model_paths=[BaseModelPath(name=model_config.served_model_name, model_path=model_config.model)],
                 )
                 self._serving_chat = OpenAIServingChat(
                     self.engine,
@@ -82,7 +84,7 @@ if _RUNTIME_IMPORTS_OK:
             model_config = await self.engine.get_model_config()
             return {
                 "object": "list",
-                "data": [{"id": model_config.model, "object": "model", "owned_by": "vllm"}],
+                "data": [{"id": model_config.served_model_name, "object": "model", "owned_by": "vllm"}],
             }
 
         @app.post("/v1/chat/completions")
@@ -102,4 +104,5 @@ def build_app(args: dict):
         max_model_len=args.get("max_model_len", 4096),
         download_dir=args.get("download_dir", "/model-cache"),
         gpu_memory_utilization=args.get("gpu_memory_utilization", 0.90),
+        served_model_name=args.get("served_model_name"),
     )
