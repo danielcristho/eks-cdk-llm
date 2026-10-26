@@ -59,6 +59,8 @@ class KarpenterStack(Stack):
                         {"id": cluster_security_group_id}
                     ],
                     "role": karpenter_node_role.role_name,
+                    # Karpenter's default hop limit of 1 blocks pods from IMDS, so they can't use the node role for S3
+                    "metadataOptions": {"httpTokens": "required", "httpPutResponseHopLimit": 2},
                     "blockDeviceMappings": [
                         {
                             "deviceName": "/dev/xvda",
