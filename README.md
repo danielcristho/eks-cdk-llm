@@ -8,4 +8,4 @@ A repository for exploring LLM Serving and MLOps practices on AWS Kubernetes (EK
 |---------|-------------|------|
 | **[Serving LLMs on EKS](./serves_llm/README.md)** | Creating EKS cluster and serving `Llama-3.1-8B-Instruct` (AWQ quantized) LLM | [LLM on EKS: Serving with vLLM](https://danielcristho.site/blog/llm-on-eks-vllm)|
 | **[Scaling LLMs on EKS](./scale_llm/README.md)** | Autoscaling `Llama-3.1-8B-Instruct` inference with Ray + KubeRay, GPU nodes provisioned on demand via Karpenter | [LLM on EKS: Scaling with Ray & Karpenter](https://danielcristho.site/blog/llm-on-eks-scale-llm)|
-
+| **[Training Pipelines on EKS](./pipeline_llm/README.md)** | LoRA fine-tuning and AWQ quantization of `Qwen2.5-1.5B-Instruct` as a repeatable Kubeflow Pipelines workflow, backed by Amazon RDS and S3 | [LLM on EKS: Training Pipelines with Kubeflow](https://danielcristho.site/blog/llm-on-eks-pipeline-kubeflow/)|

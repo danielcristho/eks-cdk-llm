@@ -1,12 +1,3 @@
-# PIPELINE DEFINITION
-# Name: qwen-lora-finetune
-# Description: Prep data -> LoRA fine-tune -> AWQ quantize -> push to S3
-# Inputs:
-#    base_model: str [Default: 'Qwen/Qwen2.5-1.5B-Instruct']
-#    bucket_name: str
-#    epochs: int [Default: 1.0]
-#    num_examples: int [Default: 200.0]
-#    s3_prefix: str [Default: 'pipeline-output/latest']
 components:
   comp-finetune-lora:
     executorLabel: exec-finetune-lora

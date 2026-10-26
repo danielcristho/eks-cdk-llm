@@ -1,6 +1,8 @@
 # LLM on EKS: Training Pipelines with Kubeflow
 
-Hi there! 👋🏽 Let's continue this series. Previous posts got a Llama-3.1-8B-Instruct serving on EKS, then made it autoscale with Ray and Karpenter. This time it's about closing the loop: fine-tuning the model, quantizing it, and pushing it back into the same serving stack, all orchestrated as a repeatable pipeline instead of a one-off script.
+![Cover](  image: https://res.cloudinary.com/diunivf9n/image/upload/v1783671470/llm-eks_n0hg9f.png)
+
+Hi there! 👋🏽 Let's continue this series. Previous posts we got a Llama-3.1-8B-Instruct serving on EKS, then I made it autoscale with Ray and Karpenter. This time it's about fine-tuning the model, quantizing it, and pushing it back into the same serving stack, all orchestrated as a repeatable pipeline instead of a one-off script.
 
 ## TL;DR
 
@@ -12,29 +14,46 @@ Hi there! 👋🏽 Let's continue this series. Previous posts got a Llama-3.1-8B
 
 ## The Stack
 
-- Amazon EKS: runs Kubeflow Pipelines, Argo Workflows, and Ray workloads.
-- Amazon RDS for MySQL: stores Kubeflow Pipelines and ML Metadata.
-- Amazon S3: stores pipeline artifacts and model assets.
-- AWS CDK: provisions the infrastructure as code.
-- Kubeflow Pipelines: orchestrates machine learning workflows.
-- Argo Workflows: executes each pipeline step.
-- vLLM: serves the trained model through an OpenAI-compatible API.
+| Technology           | Description                                                 |
+| -------------------- | ----------------------------------------------------------- |
+| Amazon EKS           | Runs Kubeflow Pipelines, Argo Workflows, and Ray workloads. |
+| Amazon RDS for MySQL | Stores Kubeflow Pipelines and ML Metadata.                  |
+| Amazon S3            | Stores pipeline artifacts and model files.                  |
+| AWS CDK              | Provisions infrastructure as code.                          |
+| Kubeflow Pipelines   | Manages machine learning workflows.                         |
+| Argo Workflows       | Executes each pipeline step.                                |
+| vLLM                 | Serves the trained model through an OpenAI-compatible API.  |
 
-## How Does It All Fit Together?
+## Architecture
 
-![Architecture diagram](PLACEHOLDER-architecture-diagram.png)
+Here's how the pieces fit together. The diagram covers the whole flow: deploying the infrastructure, running the training pipeline in Kubeflow, storing artifacts in S3 and RDS, serving the model with Ray and vLLM, and Karpenter adding GPU nodes when more capacity is needed.
 
-Everything still on the same EKS cluster from the earlier posts. Karpenter still provisions GPU nodes on demand, the same `g4dn.xlarge` NodePool that scales vLLM replicas up and down. What's new here is Kubeflow Pipelines, installed standalone (not the full Kubeflow platform) and backed by RDS + S3 instead of its default in-cluster MySQL and MinIO.
+![Pipeline](https://res.cloudinary.com/diunivf9n/image/upload/v1793009255/pipeline_uefyfj.webp)
 
-The flow: a pipeline gets compiled locally and uploaded to Kubeflow Pipelines' UI or API. Triggering a run hands it to Argo Workflows, which schedules each step as a regular pod. The GPU steps land on the same Karpenter NodePool vLLM uses, tolerating the same `nvidia.com/gpu` taint. The final step pushes the fine-tuned, re-quantized model into the same S3 bucket `vllm_stack.py` already reads from, so there's no manual file shuffling between training output and the serving path, though pointing vLLM at a specific run's output still means updating `vllm_stack.py`'s `model_id`.
+> Click the image to zoom in.
+
+Everything runs on the same EKS cluster as before. Karpenter still creates GPU nodes on demand using the same g4dn.xlarge NodePool for vLLM autoscaling.
+
+The new part is Kubeflow Pipelines, installed without the full Kubeflow platform. It uses RDS for metadata and S3 for artifact storage instead of the default in-cluster MySQL and MinIO.
+
+Following the numbers in the diagram:
+
+| No. | Stage                              | Description                                                                                                                                                                                                            |
+| --- | ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Deploy Infrastructure              | AWS CDK provisions the VPC, EKS cluster, Karpenter, RDS, and S3 bucket.                                                                                                                                                |
+| 2   | Deploy Kubeflow Pipelines and Apps | KFP, Ray, and vLLM are deployed on the same cluster. The pipeline is compiled locally and uploaded through the KFP UI or API.                                                                                          |
+| 3   | Execute Pipeline Jobs              | The KFP API Server submits runs to Argo Workflows, which schedules each step as a regular pod. GPU steps use the same Karpenter NodePool as vLLM and tolerate the `nvidia.com/gpu` taint.                              |
+| 4   | Store and Load Artifacts           | Pipeline steps exchange artifacts through S3, while run metadata and ML Metadata (MLMD) are stored in RDS. The final step uploads the fine-tuned and re-quantized model to the same S3 bucket used by `vllm_stack.py`. |
+| 5   | Download Model                     | vLLM workers download the model from S3 at startup. To serve a specific run's output, `vllm_stack.py`'s `model_id` must still be updated.                                                                              |
+| 6   | Scale Out vLLM Workers             | When traffic increases, the Ray autoscaler requests more workers. Their pods enter `Pending` state, and Karpenter provisions GPU nodes.                                                                                |
+| 7   | Send Prompt                        | Users interact through the Streamlit UI, which routes requests through the NLB to Ray Head and then to a vLLM worker.                                                                                                  |
+| 8   | Return Response                    | The generated response follows the same path back to the user.                                                                                                                                                         |
 
 ### Why Kubeflow over Ray Tune + Ray Train?
 
-Ray is already part of the stack (`ray_stack.py`), so why not use Ray Tune or Ray Train for training instead of adding Kubeflow?
+Ray is already part of the stack (`ray_stack.py`), so why not use Ray Tune or Ray Train for training instead of adding Kubeflow? Ray and Kubeflow solve different problems. Ray Tune or Ray Train is about **execution**: running training or hyperparameter search across multiple GPUs or nodes. Kubeflow Pipelines is about **orchestrating** the process: managing a multi-step workflow from data prep to training to quantization to upload as a tracked DAG. Each run keeps its history, artifact lineage is clear (which dataset produced which model), there's a UI to see which step failed, and pipelines can be reused and versioned.
 
-Ray and Kubeflow solve different problems. Ray Tune or Ray Train is about **execution**: running training or hyperparameter search across multiple GPUs or nodes. Kubeflow Pipelines is about **orchestrating** the process: managing a multi-step workflow from data prep to training to quantization to upload as a tracked DAG. Each run keeps its history, artifact lineage is clear (which dataset produced which model), there's a UI to see which step failed, and pipelines can be reused and versioned.
-
-For the fine-tuning here (LoRA on a single `g4dn.xlarge` GPU), Ray Train/Tune's multi-node scaling isn't really needed; its value shows up once training requires multiple nodes. Worth being honest about too: the existing Ray cluster in this project is dedicated to serving (autoscaling vLLM), not training. `finetune_pipeline.py` runs as a regular pod through Argo Workflows, not as a Ray job. If the scope later expands to distributed fine-tuning, the two can work together: a Kubeflow step submitting a Ray Train job to the same cluster, rather than replacing one with the other.
+For fine-tuning with LoRA on a single `g4dn.xlarge` GPU, we don't really need Ray Train/Tune because we're only using one GPU. Ray becomes more useful when training needs multiple nodes. Also, the current Ray cluster is used for serving LLMs with vLLM autoscaling, not for training. The `finetune_pipeline.py` script runs as a regular pod through Argo Workflows, not as a Ray job. If we need distributed fine-tuning in the future, we can combine both. A Kubeflow step could submit a Ray Train job to the same cluster, so they work together rather than replacing each other.
 
 ### Why RDS and S3?
 
@@ -42,7 +61,7 @@ Kubeflow Pipelines ships with in-cluster MySQL and MinIO by default, which is gr
 
 Amazon RDS stores pipeline metadata and ML Metadata, while Amazon S3 stores pipeline artifacts. This keeps state outside the Kubernetes cluster, making the platform easier to operate and more resilient. It also sidesteps a real constraint of this cluster: no EBS CSI driver is installed (model weights already live in S3, Ray's model-cache uses `emptyDir`), so the default MySQL/MinIO PersistentVolumeClaims would just sit `Pending` forever.
 
-## How Is the Kubeflow Pipelines Manifest Vendored?
+### How Is the Kubeflow Pipelines Manifest Integrated into the Project?
 
 Kubeflow Pipelines standalone ships as Kustomize, not Helm, so `cluster.add_helm_chart()` doesn't apply here. Instead, the upstream manifest is rendered once with `kustomize build` and vendored into `pipeline_llm/kubeflow/manifests/`, then patched at synth time (in `kubeflow_stack.py`) to swap the default in-cluster MySQL/MinIO for RDS + S3:
 
@@ -62,15 +81,50 @@ kustomize build "https://github.com/kubeflow/pipelines/manifests/kustomize/env/p
 2. **`finetune_lora`**: LoRA fine-tunes the base model for a single epoch, then merges the adapter into full-precision weights. Runs on a GPU node.
 3. **`quantize_and_upload`**: AWQ-quantizes the merged model back to INT4, then uploads it to `s3://<bucket>/pipeline-output/latest/`, inside the same bucket `vllm_stack.py` reads from. Also GPU.
 
-This isn't chasing accuracy. It's a small dataset and one epoch, deliberately. The point is proving the pipeline mechanics actually work end-to-end: GPU scheduling through Karpenter, artifact handoff between steps, and a model landing back in the serving path without manual intervention.
+The pipeline definition itself is short. Each step is a `@dsl.component`, and the two GPU steps get pinned to Karpenter's GPU NodePool with a small helper that requests one GPU, selects the `workload=gpu` label, and tolerates the `nvidia.com/gpu` taint:
+
+```python
+def _on_gpu_node(task: dsl.PipelineTask) -> dsl.PipelineTask:
+    task.set_accelerator_type("nvidia.com/gpu").set_accelerator_limit(1)
+    kubernetes.add_node_selector(task, label_key="workload", label_value="gpu")
+    kubernetes.add_toleration(task, key="nvidia.com/gpu", operator="Equal", value="true", effect="NoSchedule")
+    return task
+
+
+@dsl.pipeline(name="qwen-lora-finetune", description="Prep data -> LoRA fine-tune -> AWQ quantize -> push to S3")
+def finetune_pipeline(
+    bucket_name: str,
+    base_model: str = "Qwen/Qwen2.5-1.5B-Instruct",
+    num_examples: int = 200,
+    epochs: int = 1,
+    s3_prefix: str = "pipeline-output/latest",
+):
+    prep = prepare_dataset(num_examples=num_examples)
+
+    train = finetune_lora(dataset_in=prep.outputs["dataset_out"], bucket_name=bucket_name, base_model=base_model, epochs=epochs)
+    _on_gpu_node(train)
+
+    quant = quantize_and_upload(model_in=train.outputs["model_out"], bucket_name=bucket_name, s3_prefix=s3_prefix)
+    _on_gpu_node(quant)
+
+
+if __name__ == "__main__":
+    compiler.Compiler().compile(finetune_pipeline, __file__.replace(".py", ".yaml"))
+```
+
+Passing `prep.outputs["dataset_out"]` into `finetune_lora` is what gives KFP the dependency graph: no explicit ordering, the artifact handoff alone decides that `finetune_lora` waits for `prepare_dataset`, and `quantize_and_upload` waits for `finetune_lora`.
+
+The goal isn’t to achieve high accuracy. We use a small dataset and one epoch to test whether the entire pipeline works, from GPU scheduling with Karpenter and artifact sharing between steps to deploying the trained model for serving without manual steps.
 
 ### Why a Different Base Model for Training?
 
-The earlier posts in this series serve `hugging-quants/Meta-Llama-3.1-8B-Instruct-AWQ-INT4`, already quantized to INT4. The fine-tuning pipeline here doesn't start from that checkpoint. LoRA fine-tuning needs to update full-precision weights; you can't meaningfully train on top of a checkpoint that's already been quantized down to 4-bit. So the pipeline starts from full-precision weights, fine-tunes with LoRA, merges the adapter, then re-quantizes the result with AWQ as the last step, landing it back in S3 in the same INT4 format `vllm_stack.py` already expects.
+The earlier posts use hugging-quants/Meta-Llama-3.1-8B-Instruct-AWQ-INT4 for serving. However, fine-tuning requires full-precision weights, so the pipeline starts from a full-precision model, applies LoRA, merges the adapter, and quantizes the result to AWQ INT4.
 
-For the base weights, the first attempts used `NousResearch/Meta-Llama-3.1-8B-Instruct` instead of Meta's official `meta-llama/Llama-3.1-8B-Instruct` repo: same weights, same license, an ungated re-upload that needs no `HF_TOKEN`. That kept the pipeline credential-free, but ran into a real wall on `g4dn.xlarge`'s T4 (14.74GB usable VRAM): QLoRA training itself worked, but merging the LoRA adapter back into full-precision weights afterward didn't. A full fp16 reload for an 8B model doesn't physically fit, and reloading in 4-bit or 8-bit to merge instead left the state dict partially quantized, breaking the AWQ step downstream with shape and dtype errors that no amount of cleanup fixed.
+Initially, we tried Llama-3.1-8B, but the g4dn.xlarge GPU (T4, 14.74 GB VRAM) could handle QLoRA training but not merging the adapter into full-precision weights. Reloading in 4-bit or 8-bit also caused errors during AWQ quantization.
 
-Rather than add a second GPU node pool just for the merge step, `base_model` defaults to `Qwen/Qwen2.5-1.5B-Instruct` now. At that size, fp16 training and merging both fit comfortably on the same T4 with room to spare, no 4-bit/8-bit quantization needed anywhere in `finetune_lora`, which also means the whole class of merge-time dtype bugs above simply doesn't come up. The trade-off: `vllm_stack.py` still serves `hugging-quants/Meta-Llama-3.1-8B-Instruct-AWQ-INT4` from the earlier posts, so this pipeline's output isn't a drop-in replacement for it. Swapping to a matching base model (or back to Llama, on bigger GPU) is still just the `base_model` pipeline parameter.
+To avoid adding a larger GPU, we switched to Qwen/Qwen2.5-1.5B-Instruct, which fits comfortably on the same GPU for training and merging.
+
+The trade-off is that the output model cannot directly replace the Llama model currently served by vllm_stack.py. Using a matching base model or a larger GPU would be needed to make them compatible.
 
 ## Deploy
 
@@ -102,7 +156,7 @@ Redeploying from scratch weeks later (after the base model swap below) surfaced 
 
 - `cluster.add_helm_chart()`/`add_manifest()`, called from `karpenter_stack.py`, `ray_stack.py`, `vllm_stack.py`, and `kubeflow_stack.py`, all parent to the `Cluster` construct that `eks_stack.py` owns. CDK resolves which CloudFormation stack a resource belongs to by walking up the construct tree, not by which file the code lives in, so every one of those Helm charts and manifests physically deploys as part of `eks-stack`, regardless of which Python stack class wrote the call. Running `cdk deploy eks-stack` alone deployed the entire app, Karpenter, Ray, vLLM, and Kubeflow Pipelines included; the later `cdk deploy karpenter-stack`/`ray-stack`/`vllm-stack`/`kubeflow-stack` commands just confirmed to CDK that nothing had changed:
 
-  ```
+  ```sh
   eks-stack: deploying... [1/3]
   ✅  eks-stack (no changes)
   ✨  Deployment time: 0s
@@ -114,7 +168,15 @@ Redeploying from scratch weeks later (after the base model swap below) surfaced 
 
 ## Running the Pipeline
 
-Compiled `finetune_pipeline.py` locally (`python finetune_pipeline.py`, producing `finetune_pipeline.yaml`), uploaded it through the KFP UI, and hit **Create run**. The first step, `prepare-dataset`, needs no GPU and runs in seconds:
+Compiled `finetune_pipeline.py` locally (`python finetune_pipeline.py`, producing `finetune_pipeline.yaml`), then uploaded it through the KFP UI (reachable via `kubectl port-forward -n kubeflow svc/ml-pipeline-ui 8080:80`, since there's no public load balancer for it):
+
+![Uploading finetune_pipeline.yaml in the KFP UI](https://res.cloudinary.com/diunivf9n/image/upload/v1793002741/kfp-upload-finetune-pipeline_vqybss.png)
+
+Once uploaded, KFP renders the compiled DAG: three components, with the `dataset_out` and `model_out` artifacts as the handoff between them, exactly the dependency graph the artifact wiring in the code implies:
+
+![finetune_pipeline graph in the KFP UI](https://res.cloudinary.com/diunivf9n/image/upload/v1793002787/kfp-pipeline-graph_y7xkvc.png)
+
+Hit **Create run**, set `bucket_name`, and the first step, `prepare-dataset`, needs no GPU and runs in seconds:
 
 ```sh
 [KFP Executor 2026-08-28 11:41:26,465 INFO]: Loading KFP component "prepare_dataset" from /tmp/tmp.pfCjK0T5YM/ephemeral_component.py
@@ -136,9 +198,9 @@ Dataset pulled from Hugging Face, subset generated, uploaded to S3. Then it's `f
 
 The GPU `NodePool` had `consolidationPolicy: WhenEmpty`, `consolidateAfter: "30s"`. A brand-new node needs time to join, have the NVIDIA device plugin register `nvidia.com/gpu`, then get a pod actually bound to it, routinely more than 30 seconds. Karpenter's disruption loop ran its "empty" check in that window, saw zero pods yet, and deleted the node out from under `finetune-lora` mid-schedule, twice in a row on two separate runs. Bumping `consolidateAfter` to `"5m"` fixed it; the third run's node survived long enough to actually get used.
 
-The next retry failed differently, a packaging conflict, not infra this time:
+The next retry failed due to a packaging conflict, not an infrastructure issue.
 
-```
+```sh
 ImportError: pyarrow requires NumPy 2.0 or newer, found 1.26.4
 ```
 
@@ -166,7 +228,15 @@ Map: 100%|██████████| 200/200 [00:00<00:00, 710.15 examples/
 
 Nine seconds to fetch the cached base model, 43 seconds to train, no download-shards wait, no checkpoint-shard loading wait, no `peft`/`bnb` merge warnings either, since there's no quantized base to merge back into anymore. Compare that to the original Llama attempt's multi-minute shard downloads before training even started: this is what dropping the whole 4-bit/8-bit merge path actually bought.
 
-`quantize_and_upload` picked the merged model up and AWQ-quantized it, all 28 layers, about 10 minutes:
+`quantize_and_upload` picked the merged model up straight from `finetune-lora`'s `model_out` artifact in S3, visible in the step's executor input in the KFP run view:
+
+![quantize-and-upload executor input, model_in pointing at finetune-lora's model_out in S3](https://res.cloudinary.com/diunivf9n/image/upload/v1793003092/kfp-run-quantize-input_wgyojb.png)
+
+Before quantizing, AutoAWQ pulls its own default calibration dataset (~214k examples, separate from the fine-tuning data) to compute activation scales. That download isn't cached to S3 like the base model, so it goes through NAT on every run:
+
+![AutoAWQ generating its calibration split in the quantize-and-upload logs](https://res.cloudinary.com/diunivf9n/image/upload/v1793003113/kfp-run-awq-calibration_kkyjj4.png)
+
+Then it AWQ-quantized all 28 layers, about 10 minutes:
 
 ```
 AWQ: 100%|██████████| 28/28 [10:22<00:00, 22.24s/it]
@@ -188,15 +258,20 @@ NAME                       STATUS      AGE
 qwen-lora-finetune-lhrv5   Succeeded   19m
 ```
 
-End to end, for real, with a model sitting in S3 to show for it.
+The entire pipeline works, and the trained model is stored in S3.
 
 ## Conclusion
 
-Kubeflow Pipelines standalone, backed by RDS and S3 instead of its default in-cluster MySQL and MinIO, now runs on the same EKS cluster as the earlier posts and closes the loop this series set out to close: a model trained, quantized, and pushed into the same S3 path vLLM already reads from, as a repeatable pipeline instead of a one-off script.
+Kubeflow Pipelines now runs on the same EKS cluster as the earlier posts, using RDS for metadata and S3 for artifacts. It completes the workflow by turning fine-tuning, quantization, and model storage into a repeatable pipeline instead of a one-off script.
 
-Getting there took a real base-model swap partway through. The original plan kept Llama-3.1-8B throughout the whole series, but a `g4dn.xlarge` T4 can QLoRA-train an 8B model fine while still not being able to merge the adapter back into full precision afterward, no reload path (fp16, 4-bit, or 8-bit) worked cleanly. Rather than add a bigger GPU node pool just for one step, the pipeline moved to Qwen2.5-1.5B-Instruct, small enough that the entire merge-dtype problem stopped applying. That's the honest trade-off of this post: the fine-tuned output isn't a drop-in replacement for what `vllm_stack.py` currently serves, wiring the two together for real is still a `model_id` change away, not automatic.
+One major change was switching the base model. The original plan used Llama-3.1-8B throughout the series, but merging the fine-tuned adapter on a `g4dn.xlarge` GPU proved difficult. Rather than adding a larger GPU node pool just for this step, the pipeline switched to Qwen2.5-1.5B-Instruct, which avoids the memory issue.
 
-The rest of the bugs were the usual kind for this series, real and not especially glamorous: a stale `gcr.io` reference, a CloudFormation limitation around Custom Resources, demo credentials shadowing IRSA, an S3 bucket that outlived its stack, a CDK construct-parenting quirk that deployed more than one command implied it would, a packaging conflict between `pyarrow` and three pinned ML libraries, and a Karpenter consolidation window too short for its own device plugin to catch up. None of them were exotic. All of them were real, and the pipeline runs end to end now because each one got root-caused rather than worked around.
+There is still one limitation: the fine-tuned model does not automatically replace the model currently served by `vllm_stack.py`. Connecting them requires changing `model_id`, so the final integration is not yet automatic.
+
+The process also involved several practical issues, including outdated image references, CloudFormation limitations, IRSA credential conflicts, leftover S3 resources, CDK configuration quirks, Python dependency conflicts, and Karpenter removing GPU nodes too early. None was particularly unusual, but each required proper debugging. The pipeline now runs end to end because these issues were investigated and fixed rather than simply worked around.
+
+By the way, the diagram in this post also shows the chatbot (a Streamlit web app), which we haven't covered here. We'll get to it in the next post on hyperparameter tuning.
+Aight. Thanks for reading this one too, hope you found something useful 🚀
 
 References:
 
@@ -206,3 +281,9 @@ References:
 - [Kubeflow Pipelines manifests (kustomize/env/platform-agnostic-emissary)](https://github.com/kubeflow/pipelines/tree/2.2.0/manifests/kustomize/env/platform-agnostic-emissary)
 - [Kubeflow Pipelines manifests (kustomize/cluster-scoped-resources)](https://github.com/kubeflow/pipelines/tree/2.2.0/manifests/kustomize/cluster-scoped-resources)
 - [AWS Labs Kubeflow manifests (RDS + S3 overlay)](https://github.com/awslabs/kubeflow-manifests/tree/main/awsconfigs/apps/pipeline)
+- [Flaticon: User Icon](https://www.flaticon.com/free-icon/user_6175043)
+
+
+:::tip[Source Code]
+Wanna see the full code? See the repo here: [danielcristho/eks-cdk-mlops](https://github.com/danielcristho/eks-cdk-mlops)
+:::
