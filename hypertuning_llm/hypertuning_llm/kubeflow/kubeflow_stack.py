@@ -27,11 +27,7 @@ _STRIP_RESOURCES = {
     ("Service", "cache-server"),
 }
 _FRONTEND_IMAGE = "ghcr.io/kubeflow/kfp-frontend:2.4.0"
-# gcr.io/ml-pipeline/argoexec was emptied too; same v3.4.16 build lives on quay.io instead
 _ARGOEXEC_IMAGE = "quay.io/argoproj/argoexec:v3.4.16"
-# argo/pipeline-runner use aws-sdk-go (IRSA works); ml-pipeline/ml-pipeline-ui use minio-go v6
-# (IRSA doesn't for reasons unresolved, see the comment on kfp_s3_role in eks_stack.py) and
-# get static creds instead.
 _S3_IRSA_SERVICE_ACCOUNTS = {"pipeline-runner", "argo"}
 
 class KubeflowStack(Stack):
@@ -71,6 +67,30 @@ class KubeflowStack(Stack):
         pipelines = cluster.add_manifest("KubeflowPipelines", *patched_docs)
         pipelines.node.add_dependency(cluster_scoped)
 
+        # deploy_model runs as pipeline-runner and needs to repoint the vllm RayService in another namespace
+        rollout_rbac = cluster.add_manifest(
+            "KfpRayServiceRollout",
+            {
+                "apiVersion": "rbac.authorization.k8s.io/v1",
+                "kind": "Role",
+                "metadata": {"name": "rayservice-rollout", "namespace": "kuberay"},
+                "rules": [{
+                    "apiGroups": ["ray.io"],
+                    "resources": ["rayservices"],
+                    "resourceNames": ["vllm"],
+                    "verbs": ["get", "update"],
+                }],
+            },
+            {
+                "apiVersion": "rbac.authorization.k8s.io/v1",
+                "kind": "RoleBinding",
+                "metadata": {"name": "rayservice-rollout", "namespace": "kuberay"},
+                "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": "rayservice-rollout"},
+                "subjects": [{"kind": "ServiceAccount", "name": "pipeline-runner", "namespace": "kubeflow"}],
+            },
+        )
+        rollout_rbac.node.add_dependency(pipelines)
+
         CfnOutput(
             self, "KfpUiPortForward",
             value="kubectl port-forward -n kubeflow svc/ml-pipeline-ui 8080:80",
@@ -100,8 +120,6 @@ class KubeflowStack(Stack):
                 doc["spec"]["template"]["spec"]["containers"][0]["image"] = _FRONTEND_IMAGE
 
             elif key == ("ConfigMap", "kfp-launcher"):
-                # KFP v2's launcher (distinct from ml-pipeline's own object store client) falls
-                # back to minio://mlpipeline when this is unset; point it at S3 instead
                 doc["data"]["defaultPipelineRoot"] = f"s3://{bucket_name}/v2/artifacts?region={self.region}"
 
             elif key == ("Deployment", "workflow-controller"):
