@@ -1,7 +1,9 @@
 """
 Compiles to finetune_pipeline.yaml.
-Data-prep -> LoRA fine-tune -> AWQ quantize -> push to S3.
+Data-prep -> Ray Tune LoRA search -> LoRA fine-tune (best config) -> AWQ quantize -> S3 -> roll out to vLLM.
 """
+
+from typing import NamedTuple
 
 from kfp import dsl, compiler, kubernetes
 
@@ -21,6 +23,164 @@ def prepare_dataset(dataset_out: dsl.Output[dsl.Dataset], num_examples: int = 20
     base_image=GPU_BASE_IMAGE,
     packages_to_install=[
         "transformers==4.44.2", "peft==0.12.0", "accelerate==0.33.0", "datasets==2.21.0",
+        "boto3>=1.28.0", "pyarrow<17", "ray[tune]==2.40.0",
+    ],
+)
+def tune_hyperparams(
+    dataset_in: dsl.Input[dsl.Dataset],
+    trials_report: dsl.Output[dsl.Markdown],
+    bucket_name: str,
+    base_model: str = "Qwen/Qwen2.5-1.5B-Instruct",
+    num_trials: int = 6,
+    max_epochs: int = 3,
+) -> NamedTuple("BestConfig", [("lora_r", int), ("lora_alpha", int), ("learning_rate", float), ("beats_baseline", bool)]):
+    """Search LoRA rank, alpha, and learning rate with Ray Tune + ASHA; return the best config."""
+    import os
+    from collections import namedtuple
+
+    import boto3
+    import ray
+    import torch
+    from datasets import load_dataset
+    from huggingface_hub import snapshot_download
+    from ray import train, tune
+    from ray.tune.schedulers import ASHAScheduler
+    from ray.tune.search import BasicVariantGenerator
+
+    # pipeline_llm's hand-picked defaults, run as one of the trials so the report shows where they rank
+    baseline = {"lora_r": 16, "lora_alpha": 32, "learning_rate": 5e-5}
+
+    # same S3 base-model cache as finetune_lora, so the search skips the Hugging Face download through NAT
+    cache_prefix = f"base-model-cache/{base_model.replace('/', '_')}"
+    local_dir = "/tmp/base-model"
+    s3 = boto3.client("s3")
+    try:
+        s3.head_object(Bucket=bucket_name, Key=f"{cache_prefix}/config.json")
+        cached = True
+    except s3.exceptions.ClientError:
+        cached = False
+
+    if cached:
+        for page in s3.get_paginator("list_objects_v2").paginate(Bucket=bucket_name, Prefix=f"{cache_prefix}/"):
+            for obj in page.get("Contents", []):
+                dest = os.path.join(local_dir, obj["Key"][len(cache_prefix) + 1:])
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                s3.download_file(bucket_name, obj["Key"], dest)
+    else:
+        snapshot_download(repo_id=base_model, local_dir=local_dir)
+        for root, _, files in os.walk(local_dir):
+            for name in files:
+                path = os.path.join(root, name)
+                s3.upload_file(path, bucket_name, f"{cache_prefix}/{os.path.relpath(path, local_dir)}")
+
+    splits = load_dataset("json", data_files=dataset_in.path, split="train").train_test_split(test_size=0.2, seed=42)
+    train_path, eval_path = "/tmp/tune-train.jsonl", "/tmp/tune-eval.jsonl"
+    splits["train"].to_json(train_path)
+    splits["test"].to_json(eval_path)
+
+    use_gpu = torch.cuda.is_available()
+
+    def trial(config):
+        import torch
+        from datasets import load_dataset
+        from peft import LoraConfig, get_peft_model
+        from ray import train
+        from transformers import AutoModelForCausalLM, AutoTokenizer, Trainer, TrainerCallback, TrainingArguments
+
+        tokenizer = AutoTokenizer.from_pretrained(local_dir)
+        tokenizer.pad_token = tokenizer.pad_token or tokenizer.eos_token
+
+        def tokenize(batch):
+            out = tokenizer(batch["text"], truncation=True, max_length=512, padding="max_length")
+            out["labels"] = out["input_ids"].copy()
+            return out
+
+        train_ds = load_dataset("json", data_files=train_path, split="train").map(tokenize, batched=True, remove_columns=["text"])
+        eval_ds = load_dataset("json", data_files=eval_path, split="train").map(tokenize, batched=True, remove_columns=["text"])
+
+        model = AutoModelForCausalLM.from_pretrained(
+            local_dir,
+            torch_dtype=torch.float16 if use_gpu else torch.float32,
+            device_map={"": 0} if use_gpu else None,
+        )
+        model = get_peft_model(model, LoraConfig(
+            r=config["lora_r"], lora_alpha=config["lora_alpha"], lora_dropout=0.05, task_type="CAUSAL_LM",
+        ))
+
+        # one report per epoch is what ASHA compares trials on, and where it stops the losers
+        class ReportToTune(TrainerCallback):
+            def on_evaluate(self, args, state, control, metrics=None, **kwargs):
+                train.report({"eval_loss": metrics["eval_loss"], "epoch": state.epoch})
+
+        Trainer(
+            model=model,
+            args=TrainingArguments(
+                output_dir="/tmp/tune-out",
+                num_train_epochs=max_epochs,
+                per_device_train_batch_size=4,
+                gradient_accumulation_steps=2,
+                learning_rate=config["learning_rate"],
+                eval_strategy="epoch",
+                save_strategy="no",
+                logging_steps=10,
+                fp16=use_gpu,
+                report_to=[],
+            ),
+            train_dataset=train_ds,
+            eval_dataset=eval_ds,
+            callbacks=[ReportToTune()],
+        ).train()
+
+    ray.init(num_gpus=1 if use_gpu else 0, include_dashboard=False)
+    tuner = tune.Tuner(
+        tune.with_resources(trial, {"cpu": 2, "gpu": 1 if use_gpu else 0}),
+        param_space={
+            "lora_r": tune.choice([8, 16, 32]),
+            "lora_alpha": tune.choice([16, 32, 64]),
+            "learning_rate": tune.loguniform(5e-5, 5e-4),
+        },
+        tune_config=tune.TuneConfig(
+            metric="eval_loss",
+            mode="min",
+            num_samples=num_trials,
+            search_alg=BasicVariantGenerator(points_to_evaluate=[baseline]),
+            # one T4, one trial at a time (also keeps CPU smoke runs from running trials in parallel)
+            max_concurrent_trials=1,
+            scheduler=ASHAScheduler(max_t=max_epochs, grace_period=1, reduction_factor=2),
+            # a fresh worker process per trial, so each trial's GPU memory is released when it ends
+            reuse_actors=False,
+        ),
+        run_config=train.RunConfig(storage_path="/tmp/ray-results", name="lora-tune"),
+    )
+    results = tuner.fit()
+    best = results.get_best_result()
+
+    df = results.get_dataframe()
+    rows = [
+        f"| {r['config/lora_r']} | {r['config/lora_alpha']} | {r['config/learning_rate']:.2e} "
+        f"| {int(r['training_iteration'])} | {r['eval_loss']:.4f} "
+        f"| {'baseline' if all(r[f'config/{k}'] == v for k, v in baseline.items()) else ''} |"
+        for _, r in df.sort_values("eval_loss").iterrows()
+    ]
+    report = "\n".join([
+        "| lora_r | lora_alpha | learning_rate | epochs run | eval_loss | note |",
+        "|---|---|---|---|---|---|",
+        *rows,
+    ])
+    print(report)
+    with open(trials_report.path, "w") as f:
+        f.write(report)
+
+    BestConfig = namedtuple("BestConfig", ["lora_r", "lora_alpha", "learning_rate", "beats_baseline"])
+    return BestConfig(
+        best.config["lora_r"], best.config["lora_alpha"], best.config["learning_rate"], best.config != baseline,
+    )
+
+
+@dsl.component(
+    base_image=GPU_BASE_IMAGE,
+    packages_to_install=[
+        "transformers==4.44.2", "peft==0.12.0", "accelerate==0.33.0", "datasets==2.21.0",
         "boto3>=1.28.0",
         # transformers/peft/accelerate at these versions pin numpy<2, so force numpy up is a
         # dead end; pin pyarrow down instead, since datasets pulls it unpinned and latest
@@ -34,6 +194,9 @@ def finetune_lora(
     bucket_name: str,
     base_model: str = "Qwen/Qwen2.5-1.5B-Instruct",
     epochs: int = 1,
+    lora_r: int = 16,
+    lora_alpha: int = 32,
+    learning_rate: float = 5e-5,
 ):
     """LoRA fine-tune base_model on the prepared dataset, then merge and save full weights."""
     import os
@@ -77,8 +240,13 @@ def finetune_lora(
     tokenizer = AutoTokenizer.from_pretrained(local_dir)
     tokenizer.pad_token = tokenizer.pad_token or tokenizer.eos_token
 
-    model = AutoModelForCausalLM.from_pretrained(local_dir, torch_dtype=torch.float16, device_map={"": 0})
-    model = get_peft_model(model, LoraConfig(r=16, lora_alpha=32, lora_dropout=0.05, task_type="CAUSAL_LM"))
+    use_gpu = torch.cuda.is_available()
+    model = AutoModelForCausalLM.from_pretrained(
+        local_dir,
+        torch_dtype=torch.float16 if use_gpu else torch.float32,
+        device_map={"": 0} if use_gpu else None,
+    )
+    model = get_peft_model(model, LoraConfig(r=lora_r, lora_alpha=lora_alpha, lora_dropout=0.05, task_type="CAUSAL_LM"))
 
     def tokenize(batch):
         out = tokenizer(batch["text"], truncation=True, max_length=512, padding="max_length")
@@ -95,9 +263,11 @@ def finetune_lora(
             num_train_epochs=epochs,
             per_device_train_batch_size=4,
             gradient_accumulation_steps=2,
+            learning_rate=learning_rate,
             logging_steps=10,
             save_strategy="no",
-            fp16=True,
+            fp16=use_gpu,
+            report_to=[],
         ),
         train_dataset=ds,
     ).train()
@@ -111,8 +281,8 @@ def finetune_lora(
     base_image=GPU_BASE_IMAGE,
     packages_to_install=["autoawq==0.2.6", "transformers==4.44.2", "boto3>=1.28.0"],
 )
-def quantize_and_upload(model_in: dsl.Input[dsl.Model], bucket_name: str, s3_prefix: str):
-    """AWQ-quantize the merged model, then push it straight to S3 — vllm_stack reads from here."""
+def quantize_and_upload(model_in: dsl.Input[dsl.Model], bucket_name: str, s3_prefix: str, run_id: str) -> str:
+    """AWQ-quantize the merged model, then push it to its own versioned S3 prefix; returns the model's S3 URI."""
     import pathlib
     import subprocess
 
@@ -137,10 +307,32 @@ def quantize_and_upload(model_in: dsl.Input[dsl.Model], bucket_name: str, s3_pre
     model.save_quantized(str(out_dir))
     tokenizer.save_pretrained(str(out_dir))
 
+    # one prefix per run, so the model being replaced stays in S3 for rollback
+    prefix = f"{s3_prefix}/{run_id}"
     s3 = boto3.client("s3")
     for f in out_dir.rglob("*"):
         if f.is_file():
-            s3.upload_file(str(f), bucket_name, f"{s3_prefix}/{f.name}")
+            s3.upload_file(str(f), bucket_name, f"{prefix}/{f.name}")
+    return f"s3://{bucket_name}/{prefix}"
+
+
+@dsl.component(base_image="python:3.11-slim", packages_to_install=["kubernetes==31.0.0"])
+def deploy_model(model_uri: str):
+    """Point the vllm RayService at model_uri. Since MODEL_URI sits in rayClusterConfig, KubeRay brings up a
+    new cluster with the new model and moves traffic over only once it is serving (zero-downtime upgrade)."""
+    from kubernetes import client, config
+
+    config.load_incluster_config()
+    api = client.CustomObjectsApi()
+    svc = api.get_namespaced_custom_object("ray.io", "v1", "kuberay", "rayservices", "vllm")
+    for group in svc["spec"]["rayClusterConfig"]["workerGroupSpecs"]:
+        pod = group["template"]["spec"]
+        for container in pod.get("initContainers", []) + pod["containers"]:
+            for env in container.get("env", []):
+                if env["name"] == "MODEL_URI":
+                    env["value"] = model_uri
+    api.replace_namespaced_custom_object("ray.io", "v1", "kuberay", "rayservices", "vllm", svc)
+    print(f"vllm RayService now points at {model_uri}")
 
 
 def _on_gpu_node(task: dsl.PipelineTask) -> dsl.PipelineTask:
@@ -151,21 +343,43 @@ def _on_gpu_node(task: dsl.PipelineTask) -> dsl.PipelineTask:
     return task
 
 
-@dsl.pipeline(name="qwen-lora-finetune", description="Prep data -> LoRA fine-tune -> AWQ quantize -> push to S3")
+@dsl.pipeline(
+    name="qwen-lora-tune-finetune",
+    description="Prep data -> Ray Tune LoRA search -> if it beats the baseline: LoRA fine-tune -> AWQ quantize -> S3 -> roll out to vLLM",
+)
 def finetune_pipeline(
     bucket_name: str,
     base_model: str = "Qwen/Qwen2.5-1.5B-Instruct",
     num_examples: int = 200,
-    epochs: int = 1,
-    s3_prefix: str = "pipeline-output/latest",
+    num_trials: int = 6,
+    tune_max_epochs: int = 3,
+    s3_prefix: str = "pipeline-output",
 ):
     prep = prepare_dataset(num_examples=num_examples)
 
-    train = finetune_lora(dataset_in=prep.outputs["dataset_out"], bucket_name=bucket_name, base_model=base_model, epochs=epochs)
-    _on_gpu_node(train)
+    search = tune_hyperparams(
+        dataset_in=prep.outputs["dataset_out"], bucket_name=bucket_name, base_model=base_model,
+        num_trials=num_trials, max_epochs=tune_max_epochs,
+    )
+    _on_gpu_node(search)
 
-    quant = quantize_and_upload(model_in=train.outputs["model_out"], bucket_name=bucket_name, s3_prefix=s3_prefix)
-    _on_gpu_node(quant)
+    # baseline won: the served model uses the best config, so skip the GPU steps and keep it
+    with dsl.If(search.outputs["beats_baseline"] == True):  # noqa: E712
+        # ASHA lets a trial reach max_t if it keeps winning, so the best config is proven at that length
+        train = finetune_lora(
+            dataset_in=prep.outputs["dataset_out"], bucket_name=bucket_name, base_model=base_model,
+            epochs=tune_max_epochs, lora_r=search.outputs["lora_r"], lora_alpha=search.outputs["lora_alpha"],
+            learning_rate=search.outputs["learning_rate"],
+        )
+        _on_gpu_node(train)
+
+        quant = quantize_and_upload(
+            model_in=train.outputs["model_out"], bucket_name=bucket_name, s3_prefix=s3_prefix,
+            run_id=dsl.PIPELINE_JOB_ID_PLACEHOLDER,
+        )
+        _on_gpu_node(quant)
+
+        deploy_model(model_uri=quant.output)
 
 
 if __name__ == "__main__":
