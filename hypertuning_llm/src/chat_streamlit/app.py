@@ -1,12 +1,15 @@
+import sys
+from pathlib import Path
 import os
 import streamlit as st
 from openai import OpenAI
 from dotenv import load_dotenv
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # shared prompt.py in src/
+from prompt import SYSTEM_PROMPT
 
 load_dotenv()
 
 VLLM_URL = os.getenv("VLLM_URL")
-# stable name across rollouts; the weights behind it change, the client does not
 
 client = OpenAI(base_url=f"{VLLM_URL}/v1", api_key="none")
 
@@ -27,7 +30,7 @@ if prompt := st.chat_input("How is your day? Say something..."):
     with st.chat_message("assistant"):
         stream = client.chat.completions.create(
             model="qwen-lora",
-            messages=st.session_state.messages,
+            messages=[{"role": "system", "content": SYSTEM_PROMPT}] + st.session_state.messages,
             stream=True,
         )
         response = st.write_stream(chunk.choices[0].delta.content or "" for chunk in stream)

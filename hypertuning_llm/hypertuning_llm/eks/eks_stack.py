@@ -53,10 +53,12 @@ class EksStack(Stack):
             labels={"role": "system"},
         )
 
-        self.cluster.aws_auth.add_user_mapping(
-            iam.User.from_user_name(self, "AdminUser", os.environ["AWS_ADMIN_USER"]),
-            groups=["system:masters"],
-        )
+        # comma-separated, e.g. "onomi,comday"
+        for i, user_name in enumerate(os.environ["AWS_ADMIN_USER"].split(",")):
+            self.cluster.aws_auth.add_user_mapping(
+                iam.User.from_user_name(self, f"AdminUser{i or ''}", user_name.strip()),
+                groups=["system:masters"],
+            )
 
         # IAM role for EC2 instances provisioned by Karpenter
         self.karpenter_node_role = iam.Role(

@@ -106,7 +106,8 @@ class VllmStack(Stack):
                         },
                         "spec": {
                             "type": "LoadBalancer",
-                            "ports": [{"name": "serve", "port": 80, "targetPort": 8000, "protocol": "TCP"}],
+                            # KubeRay overrides serve ports with its own 8000; setting 80 here was ignored live
+                            "ports": [{"name": "serve", "port": 8000, "targetPort": 8000, "protocol": "TCP"}],
                         },
                     },
                     "rayClusterConfig": {
