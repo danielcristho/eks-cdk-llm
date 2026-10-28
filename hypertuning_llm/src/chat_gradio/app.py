@@ -22,28 +22,6 @@ STOPWORDS = {"the", "and", "for", "with", "what", "when", "where", "who", "apa",
              "di", "ke", "dan", "itu", "ini", "berapa", "siapa", "kapan", "mana"}
 LOG = deque(maxlen=50)
 
-CSS = """
-:root, .dark { --ink: #2b2b2b; --muted: #6b6b6b; --paper: #fbfaf6; --line: #a0a0a0; --mark: #ffe9a8; }
-body, gradio-app, .gradio-container { background: var(--paper) !important; }
-.gradio-container { max-width: 1100px !important; margin: auto; color: var(--ink); }
-.gradio-container * { box-shadow: none !important; }
-.block, .form, .panel { background: transparent !important; border: none !important; }
-#hero { padding: 8px 4px 14px; border-bottom: 2px dashed var(--line); }
-#hero h1 { margin: 0; font-size: 1.9rem; color: var(--ink); }
-#hero h1 mark { background: var(--mark); padding: 0 6px; }
-#hero p { margin: 4px 0 0; color: var(--muted); }
-#chat { border: 2px solid var(--ink) !important; border-radius: 14px 18px 12px 16px !important; }
-#sources { border: 2px dashed var(--line) !important; border-radius: 12px; padding: 4px 14px !important; }
-#sources li { margin-bottom: 6px; }
-#log textarea { font-family: ui-monospace, monospace !important; font-size: .8rem !important;
-                border: 2px dashed var(--line) !important; }
-textarea { border: 2px solid var(--ink) !important; border-radius: 12px !important; background: #fff !important; }
-.message.bot { background: #fff !important; border: 1.5px solid var(--line) !important; }
-.message.user { background: var(--mark) !important; border: 1.5px solid var(--ink) !important; }
-button.example { border: 1.5px dashed var(--line) !important; background: #fff !important; }
-footer { display: none !important; }
-"""
-
 HERO = """
 <div id="hero">
   <h1><mark>ComDay Jakarta 2026</mark> assistant</h1>
@@ -134,4 +112,4 @@ if __name__ == "__main__":
         neutral_hue="stone",
         font=[gr.themes.GoogleFont("Patrick Hand"), "Comic Sans MS", "sans-serif"],
     )
-    demo.launch(theme=theme, css=CSS)
+    demo.launch(theme=theme, css_paths=[Path(__file__).with_name("style.css")])
