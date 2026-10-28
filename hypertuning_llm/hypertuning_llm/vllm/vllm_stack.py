@@ -15,7 +15,6 @@ class VllmStack(Stack):
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
 
-        # model A: pipeline_llm's output. deploy_model in the pipeline swaps this for a newer run's model
         model_uri = f"s3://{model_bucket_name}/pipeline-output/latest"
         script_sha = hashlib.sha256(_load_serve_script().encode()).hexdigest()[:12]
         nvidia_plugin = cluster.add_helm_chart(
@@ -50,8 +49,7 @@ class VllmStack(Stack):
         )
         serve_configmap.node.add_dependency(kuberay_operator)
 
-        # Runs vLLM as a Ray Serve deployment
-        # Ray routes requests across replicas, autoscaler scales workers, Karpenter provisions GPU nodes
+        # Runs vLLM as a Ray Serve deployment, routes requests across replicas, autoscaler scales workers, Karpenter provisions GPU nodes
         ray_service = cluster.add_manifest(
             "VllmRayService",
             {
@@ -70,8 +68,8 @@ class VllmStack(Stack):
                         "    runtime_env:\n"
                         "      pip:\n"
                         "        - vllm==0.8.5\n"
-                        "        - ray[serve]==2.43.0\n"  
-                        "        - numpy<2\n"             
+                        "        - ray[serve]==2.43.0\n"
+                        "        - numpy<2\n"
                         "      env_vars:\n"
                         "        PYTHONPATH: /serve-scripts\n"
                         "    args:\n"
@@ -81,7 +79,7 @@ class VllmStack(Stack):
                         "      quantization: awq\n"
                         "      max_model_len: 4096\n"
                         "      download_dir: /model-cache\n"
-                        f"      _script_sha: \"{script_sha}\"\n"  
+                        f"      _script_sha: \"{script_sha}\"\n"
                         "    deployments:\n"
                         "      - name: VLLMDeployment\n"
                         "        max_ongoing_requests: 5\n"
@@ -94,22 +92,6 @@ class VllmStack(Stack):
                         "          num_gpus: 1\n"
                         "          memory: 12288\n"
                     ),
-                    # KubeRay owns this Service and repoints it at the new cluster during an upgrade;
-                    # a standalone Service selecting role=ray-head would hit both clusters' heads mid-rollout
-                    "serveService": {
-                        "metadata": {
-                            "name": "vllm-nlb",
-                            "annotations": {
-                                "service.beta.kubernetes.io/aws-load-balancer-type": "nlb",
-                                "service.beta.kubernetes.io/aws-load-balancer-scheme": "internet-facing",
-                            },
-                        },
-                        "spec": {
-                            "type": "LoadBalancer",
-                            # KubeRay overrides serve ports with its own 8000; setting 80 here was ignored live
-                            "ports": [{"name": "serve", "port": 8000, "targetPort": 8000, "protocol": "TCP"}],
-                        },
-                    },
                     "rayClusterConfig": {
                         "rayVersion": "2.43.0",
                         "enableInTreeAutoscaling": True,
@@ -173,8 +155,6 @@ class VllmStack(Stack):
                                         "terminationGracePeriodSeconds": 120,
                                         "initContainers": [
                                             {
-                                                # MODEL_URI lives in rayClusterConfig, so changing it makes KubeRay
-                                                # build a new cluster and switch traffic once it is ready
                                                 "name": "model-cache-sync",
                                                 "image": "amazon/aws-cli:2.17.62",
                                                 "command": [
@@ -232,8 +212,9 @@ class VllmStack(Stack):
 
         CfnOutput(
             self, "VllmEndpointNote",
-            value="Run: kubectl get svc vllm-nlb -n kuberay -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'",
-            description="Command to get the NLB endpoint after deployment",
+            value="In-cluster: http://vllm-serve-svc.kuberay.svc.cluster.local:8000. "
+                  "Access from local: kubectl port-forward -n kuberay svc/vllm-serve-svc 8000:8000",
+            description="How to reach vLLM after deployment",
         )
 
 
