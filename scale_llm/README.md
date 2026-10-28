@@ -697,7 +697,9 @@ Run `cdk destroy --all` when you're done. Karpenter-provisioned nodes aren't tra
 ![EC2 Instances remove](https://res.cloudinary.com/diunivf9n/image/upload/v1783683250/b7844d09-a828-4183-a497-286d5e96d10f.png)
 :::
 
-Aight. Thanks for reading this one too 🚀
+What's next? I'm really excited about [Kubeflow](https://github.com/kubeflow/kubeflow) — let's see what we can do with it.
+
+Aight. Thanks for reading this one too, hope you found something useful 🚀
 
 References:
 

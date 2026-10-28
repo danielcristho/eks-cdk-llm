@@ -28,7 +28,7 @@ Hi there! 👋🏽 Let's continue this series. Previous posts we got a Llama-3.1
 
 Here's how the pieces fit together. The diagram covers the whole flow: deploying the infrastructure, running the training pipeline in Kubeflow, storing artifacts in S3 and RDS, serving the model with Ray and vLLM, and Karpenter adding GPU nodes when more capacity is needed.
 
-![Pipeline](https://res.cloudinary.com/diunivf9n/image/upload/v1793009255/pipeline_uefyfj.webp)
+![Kubeflow Pipelines on EKS.](https://res.cloudinary.com/diunivf9n/image/upload/v1793009255/pipeline_uefyfj.webp)
 
 > Click the image to zoom in.
 
