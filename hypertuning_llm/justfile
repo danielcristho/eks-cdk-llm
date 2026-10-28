@@ -72,3 +72,11 @@ locust-stop:
 # score the model on knowledge base questions (needs vllm-forward), --no-kb for the baseline
 eval *args:
     python tests/eval_kb.py {{args}}
+
+# Argo CD UI at localhost:8081 (user admin)
+argocd-ui:
+    kubectl port-forward -n argocd svc/argocd-server 8081:80
+
+# initial admin password for the Argo CD UI
+argocd-password:
+    @kubectl get secret -n argocd argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d; echo

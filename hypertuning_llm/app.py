@@ -11,6 +11,7 @@ from hypertuning_llm.karpenter.karpenter_stack import KarpenterStack
 from hypertuning_llm.ray.ray_stack import RayStack
 from hypertuning_llm.vllm.vllm_stack import VllmStack
 from hypertuning_llm.kubeflow.kubeflow_stack import KubeflowStack
+from hypertuning_llm.argocd.argocd_stack import ArgocdStack
 
 app = cdk.App()
 
@@ -49,7 +50,6 @@ vllm_stack = VllmStack(
     app,
     "vllm-stack",
     cluster=eks_stack.cluster,
-    model_bucket_name=eks_stack.model_bucket.bucket_name,
     kuberay_operator=ray_stack.kuberay_operator,
     env=env,
 )
@@ -69,5 +69,17 @@ kubeflow_stack = KubeflowStack(
     env=env,
 )
 kubeflow_stack.add_dependency(vllm_stack)
+
+argocd_stack = ArgocdStack(
+    app,
+    "argocd-stack",
+    cluster=eks_stack.cluster,
+    repo_url=os.getenv("GITOPS_REPO_URL", "https://github.com/danielcristho/eks-cdk-mlops.git"),
+    model_bucket_name=eks_stack.model_bucket.bucket_name,
+    script_sha=vllm_stack.script_sha,
+    prerequisites=vllm_stack.prerequisites,
+    env=env,
+)
+argocd_stack.add_dependency(vllm_stack)
 
 app.synth()
