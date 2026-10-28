@@ -1,4 +1,4 @@
-# Serves LLM - Just Recipe
+# Tuning LLM - Just Recipe
 # Run tasks with: just <task-name>
 
 # LOad dotenv
@@ -34,9 +34,9 @@ destroy: venv
 kubeconfig:
     aws eks update-kubeconfig --name $CLUSTER_NAME --region $AWS_DEFAULT_REGION
 
-# print the vLLM NLB hostname
-endpoint:
-    kubectl get svc vllm-nlb -n kuberay -o jsonpath='{.status.loadBalancer.ingress[0].hostname}{"\n"}'
+# reach vLLM at localhost:8000 (set VLLM_URL=http://localhost:8000)
+vllm-forward:
+    kubectl port-forward -n kuberay svc/vllm-serve-svc 8000:8000
 
 # port-forward the KFP UI to localhost:8080
 kfp-ui:
@@ -45,3 +45,20 @@ kfp-ui:
 # compile finetune_pipeline.yaml
 compile: venv
     python hypertuning_llm/kubeflow/pipelines/finetune_pipeline.py
+
+# keep N requests in flight against vLLM from a pod inside the cluster, e.g. just load 8 600
+load concurrency="8" duration="600":
+    kubectl run loadgen --rm -i --restart=Never -n kuberay --image=python:3.11-slim -- \
+      python -c "$(cat tests/load_test.py)" --concurrency {{concurrency}} --duration {{duration}}
+
+# Locust web UI at localhost:8089 driving vLLM from inside the cluster; Ctrl+C then `just locust-stop`
+locust:
+    kubectl create configmap locustfile -n kuberay --from-file=tests/locustfile.py --from-file=tests/load_test.py \
+      --dry-run=client -o yaml | kubectl apply -f -
+    kubectl apply -f manifests/locust-pod.yaml
+    kubectl wait -n kuberay --for=condition=Ready pod/locust --timeout=180s
+    @echo "open http://localhost:8089"
+    kubectl port-forward -n kuberay pod/locust 8089:8089
+
+locust-stop:
+    kubectl delete pod/locust configmap/locustfile -n kuberay --ignore-not-found
