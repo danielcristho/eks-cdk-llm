@@ -1,3 +1,5 @@
+import os
+
 from aws_cdk import Stack, aws_eks as eks, aws_iam as iam
 from constructs import Construct
 
@@ -107,7 +109,7 @@ class KarpenterStack(Stack):
                                 {
                                     "key": "node.kubernetes.io/instance-type",
                                     "operator": "In",
-                                    "values": ["g4dn.xlarge"],
+                                    "values": [os.environ["GPU_INSTANCE_TYPE"]],  # from .env
                                 },
                                 {
                                     "key": "karpenter.sh/capacity-type",
@@ -136,9 +138,6 @@ class KarpenterStack(Stack):
                     },
                     "limits": {"nvidia.com/gpu": "4"},  # 4 × g4dn.xlarge
                     "disruption": {
-                        # 30s raced the NVIDIA device plugin registering the GPU + the pod
-                        # binding to it, so Karpenter deleted brand-new nodes it had just
-                        # provisioned for a pending pod ("empty" by its own stale pod count)
                         "consolidationPolicy": "WhenEmpty",
                         "consolidateAfter": "5m",
                     },

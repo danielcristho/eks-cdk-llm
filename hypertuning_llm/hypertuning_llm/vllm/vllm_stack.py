@@ -1,6 +1,7 @@
 from aws_cdk import Stack, CfnOutput, aws_eks as eks
 from constructs import Construct
 import hashlib
+import os
 
 class VllmStack(Stack):
 
@@ -15,7 +16,10 @@ class VllmStack(Stack):
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
 
-        model_uri = f"s3://{model_bucket_name}/pipeline-output/latest"
+        model_uri = f"s3://{model_bucket_name}/{os.environ['MODEL_PREFIX']}"
+        ray_version = os.environ["RAY_VERSION"]
+        ray_image = f"rayproject/ray:{ray_version}-gpu"
+        max_replicas = int(os.environ["VLLM_MAX_REPLICAS"])
         script_sha = hashlib.sha256(_load_serve_script().encode()).hexdigest()[:12]
         nvidia_plugin = cluster.add_helm_chart(
             "NvidiaDevicePlugin",
@@ -67,17 +71,17 @@ class VllmStack(Stack):
                         "    route_prefix: /\n"
                         "    runtime_env:\n"
                         "      pip:\n"
-                        "        - vllm==0.8.5\n"
-                        "        - ray[serve]==2.43.0\n"
+                        f"        - vllm=={os.environ['VLLM_VERSION']}\n"
+                        f"        - ray[serve]=={ray_version}\n"
                         "        - numpy<2\n"
                         "      env_vars:\n"
                         "        PYTHONPATH: /serve-scripts\n"
                         "    args:\n"
                         "      model: /model-cache/current\n"
-                        "      served_model_name: qwen-lora\n"
-                        "      dtype: half\n"
-                        "      quantization: awq\n"
-                        "      max_model_len: 4096\n"
+                        f"      served_model_name: {os.environ['SERVED_MODEL_NAME']}\n"
+                        f"      dtype: {os.environ['DTYPE']}\n"
+                        f"      quantization: {os.environ['QUANTIZATION']}\n"
+                        f"      max_model_len: {os.environ['MAX_MODEL_LEN']}\n"
                         "      download_dir: /model-cache\n"
                         f"      _script_sha: \"{script_sha}\"\n"
                         "    deployments:\n"
@@ -86,14 +90,14 @@ class VllmStack(Stack):
                         "        autoscaling_config:\n"
                         # 1, not 0: a new cluster takes traffic once a replica has the new model loaded
                         "          min_replicas: 1\n"
-                        "          max_replicas: 2\n"  # set max 2 × g4dn.xlarge
+                        f"          max_replicas: {max_replicas}\n"  # set max 2 × g4dn.xlarge
                         "          target_ongoing_requests: 2\n"
                         "        ray_actor_options:\n"
                         "          num_gpus: 1\n"
                         "          memory: 12288\n"
                     ),
                     "rayClusterConfig": {
-                        "rayVersion": "2.43.0",
+                        "rayVersion": ray_version,
                         "enableInTreeAutoscaling": True,
                         "headGroupSpec": {
                             "rayStartParams": {
@@ -107,7 +111,7 @@ class VllmStack(Stack):
                                     "containers": [
                                         {
                                             "name": "ray-head",
-                                            "image": "rayproject/ray:2.43.0-gpu",
+                                            "image": ray_image,
                                             "ports": [
                                                 {"containerPort": 6379,  "name": "gcs"},
                                                 {"containerPort": 10001, "name": "client"},
@@ -137,7 +141,7 @@ class VllmStack(Stack):
                                 "groupName": "gpu-workers",
                                 "replicas": 0,
                                 "minReplicas": 0,
-                                "maxReplicas": 2,  # set max 2 × g4dn.xlarge
+                                "maxReplicas": max_replicas,  # set max 2 × g4dn.xlarge
                                 "rayStartParams": {"num-gpus": "1"},
                                 "template": {
                                     "metadata": {
@@ -156,7 +160,7 @@ class VllmStack(Stack):
                                         "initContainers": [
                                             {
                                                 "name": "model-cache-sync",
-                                                "image": "amazon/aws-cli:2.17.62",
+                                                "image": os.environ["AWS_CLI_IMAGE"],
                                                 "command": [
                                                     "sh", "-c",
                                                     "aws s3 sync \"$MODEL_URI\" /model-cache/current",
@@ -173,7 +177,7 @@ class VllmStack(Stack):
                                         "containers": [
                                             {
                                                 "name": "ray-worker",
-                                                "image": "rayproject/ray:2.43.0-gpu",
+                                                "image": ray_image,
                                                 "resources": {
                                                     "requests": {
                                                         "cpu":    "2",
