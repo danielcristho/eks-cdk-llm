@@ -1,0 +1,39 @@
+# Scale LLM - Just Recipe
+# Run tasks with: just <task-name>
+
+# LOad dotenv
+set dotenv-load
+
+export JSII_RUNTIME_PACKAGE_CACHE := "disabled"
+export PATH := justfile_directory() + "/.venv/bin:" + env_var("PATH")
+
+default:
+    @just --list
+
+# create .venv and install requirements
+venv:
+    test -d .venv || (python3 -m venv .venv && .venv/bin/pip install -q -r requirements.txt -r requirements-dev.txt)
+
+# cdk synth
+synth: venv
+    cdk synth --quiet
+
+# cdk diff
+diff: venv
+    cdk diff
+
+# cdk deploy --all
+deploy: venv
+    cdk deploy --all
+
+# cdk destroy --all
+destroy: venv
+    cdk destroy --all
+
+# point kubectl at this project's cluster
+kubeconfig:
+    aws eks update-kubeconfig --name $CLUSTER_NAME --region $AWS_DEFAULT_REGION
+
+# print the vLLM NLB hostname
+endpoint:
+    kubectl get svc vllm-nlb -n kuberay -o jsonpath='{.status.loadBalancer.ingress[0].hostname}{"\n"}'

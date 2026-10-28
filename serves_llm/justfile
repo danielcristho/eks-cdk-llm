@@ -1,4 +1,4 @@
-# Serves LLM - Task Runner
+# Serves LLM - Just Recipe
 # Run tasks with: just <task-name>
 
 # LOad dotenv
