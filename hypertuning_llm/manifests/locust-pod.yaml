@@ -1,0 +1,33 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: locust
+  namespace: kuberay
+spec:
+  restartPolicy: Never
+  nodeSelector:
+    role: system
+  containers:
+    - name: locust
+      image: locustio/locust:2.46.7
+      workingDir: /locust
+      args: ["-f", "locustfile.py"]
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+      env:
+        - name: LOCUST_HOST
+          value: http://vllm-serve-svc.kuberay.svc.cluster.local:8000
+      ports:
+        - containerPort: 8089
+      volumeMounts:
+        - name: locustfile
+          mountPath: /locust
+  volumes:
+    - name: locustfile
+      configMap:
+        name: locustfile
