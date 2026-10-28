@@ -18,15 +18,12 @@ env = cdk.Environment(
     region=os.getenv("AWS_DEFAULT_REGION"),
 )
 
-# 1. Core infrastructure: VPC, EKS cluster, system node group, Karpenter IAM roles
 eks_stack = EksStack(
     app,
     "eks-stack",
     env=env,
 )
 
-# 2. Karpenter: controller Helm chart + GPU NodePool + EC2NodeClass
-#    Depends on EksStack for cluster, IRSA roles, and tagged subnets.
 karpenter_stack = KarpenterStack(
     app,
     "karpenter-stack",
@@ -39,8 +36,6 @@ karpenter_stack = KarpenterStack(
 )
 karpenter_stack.add_dependency(eks_stack)
 
-# 3. Ray: KubeRay Operator + RayCluster (head + GPU workers)
-#    GPU workers start at 0 replicas; Karpenter provisions nodes on demand.
 ray_stack = RayStack(
     app,
     "ray-stack",
@@ -49,8 +44,6 @@ ray_stack = RayStack(
 )
 ray_stack.add_dependency(karpenter_stack)
 
-# 4. vLLM: NVIDIA device plugin + RayService (vLLM via Ray Serve)
-#    Ray Serve autoscales vLLM replicas; Karpenter follows with GPU nodes.
 vllm_stack = VllmStack(
     app,
     "vllm-stack",
