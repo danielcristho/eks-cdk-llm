@@ -2,6 +2,7 @@ import sys
 from pathlib import Path
 import os
 import re
+from collections import deque
 
 import gradio as gr
 from dotenv import load_dotenv
@@ -9,6 +10,7 @@ from openai import APIConnectionError, OpenAI
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # shared prompt.py in src/
 from prompt import KNOWLEDGE_BASE, SYSTEM_PROMPT
+from llm import stream_chat
 
 load_dotenv()
 
@@ -18,6 +20,7 @@ client = OpenAI(base_url=f"{VLLM_URL}/v1", api_key="none")
 KB_LINES = [line[2:] for line in KNOWLEDGE_BASE.splitlines() if line.startswith("- ")]
 STOPWORDS = {"the", "and", "for", "with", "what", "when", "where", "who", "apa", "yang", "jam", "ada",
              "di", "ke", "dan", "itu", "ini", "berapa", "siapa", "kapan", "mana"}
+LOG = deque(maxlen=50)
 
 CSS = """
 :root, .dark { --ink: #2b2b2b; --muted: #6b6b6b; --paper: #fbfaf6; --line: #a0a0a0; --mark: #ffe9a8; }
@@ -32,6 +35,8 @@ body, gradio-app, .gradio-container { background: var(--paper) !important; }
 #chat { border: 2px solid var(--ink) !important; border-radius: 14px 18px 12px 16px !important; }
 #sources { border: 2px dashed var(--line) !important; border-radius: 12px; padding: 4px 14px !important; }
 #sources li { margin-bottom: 6px; }
+#log textarea { font-family: ui-monospace, monospace !important; font-size: .8rem !important;
+                border: 2px dashed var(--line) !important; }
 textarea { border: 2px solid var(--ink) !important; border-radius: 12px !important; background: #fff !important; }
 .message.bot { background: #fff !important; border: 1.5px solid var(--line) !important; }
 .message.user { background: var(--mark) !important; border: 1.5px solid var(--ink) !important; }
@@ -69,7 +74,6 @@ def format_sources(lines: list[str]) -> str:
 
 
 def text_of(content) -> str:
-    # Gradio 6 history content can be a list of parts
     if isinstance(content, list):
         return " ".join(p.get("text", "") for p in content if isinstance(p, dict))
     return content
@@ -82,11 +86,10 @@ def chat(message: str, history: list[dict]):
     messages.append({"role": "user", "content": message})
 
     try:
-        stream = client.chat.completions.create(model="qwen-lora", messages=messages, stream=True)
-        answer = ""
-        for chunk in stream:
-            answer += chunk.choices[0].delta.content or ""
-            yield answer, sources
+        for answer, stats in stream_chat(client, messages):
+            if stats:
+                LOG.appendleft(stats.line())
+            yield answer, sources, "\n".join(LOG)
     except APIConnectionError:
         raise gr.Error(f"Can't reach the model at {VLLM_URL}. Is the cluster up and VLLM_URL current?")
 
@@ -100,6 +103,14 @@ with gr.Blocks(title="ComDay Jakarta 2026 Assistant") as demo:
                 render=False,
                 elem_id="sources",
             )
+            log = gr.Textbox(
+                label="live log (all users, newest first)",
+                lines=10,
+                max_lines=10,
+                interactive=False,
+                render=False,
+                elem_id="log",
+            )
             gr.ChatInterface(
                 chat,
                 chatbot=gr.Chatbot(
@@ -110,11 +121,12 @@ with gr.Blocks(title="ComDay Jakarta 2026 Assistant") as demo:
                 ),
                 textbox=gr.Textbox(placeholder="type a question...", scale=7),
                 examples=EXAMPLES,
-                additional_outputs=[sources],
+                additional_outputs=[sources, log],
                 fill_height=False,
             )
         with gr.Column(scale=2):
             sources.render()
+            log.render()
 
 if __name__ == "__main__":
     theme = gr.themes.Base(

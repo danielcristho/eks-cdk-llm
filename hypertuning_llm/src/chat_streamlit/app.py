@@ -6,6 +6,7 @@ from openai import OpenAI
 from dotenv import load_dotenv
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # shared prompt.py in src/
 from prompt import SYSTEM_PROMPT
+from llm import stream_chat
 
 load_dotenv()
 
@@ -21,18 +22,23 @@ if "messages" not in st.session_state:
     st.session_state.messages = []
 
 for msg in st.session_state.messages:
-    st.chat_message(msg["role"]).write(msg["content"])
+    with st.chat_message(msg["role"]):
+        st.write(msg["content"])
+        if msg.get("stats"):
+            st.caption(msg["stats"])
 
 if prompt := st.chat_input("How is your day? Say something..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
     st.chat_message("user").write(prompt)
 
+    history = [{"role": m["role"], "content": m["content"]} for m in st.session_state.messages]
     with st.chat_message("assistant"):
-        stream = client.chat.completions.create(
-            model="qwen-lora",
-            messages=[{"role": "system", "content": SYSTEM_PROMPT}] + st.session_state.messages,
-            stream=True,
-        )
-        response = st.write_stream(chunk.choices[0].delta.content or "" for chunk in stream)
+        placeholder = st.empty()
+        response, line = "", None
+        for response, stats in stream_chat(client, [{"role": "system", "content": SYSTEM_PROMPT}] + history):
+            placeholder.write(response)
+            if stats:
+                line = stats.line()
+                st.caption(line)
 
-    st.session_state.messages.append({"role": "assistant", "content": response})
+    st.session_state.messages.append({"role": "assistant", "content": response, "stats": line})
