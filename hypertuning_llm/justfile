@@ -22,9 +22,15 @@ synth: venv
 diff: venv
     cdk diff
 
-# cdk deploy --all
-deploy: venv
+# cdk deploy --all, only from a clean tree so what runs always matches a commit
+deploy: venv clean
+    @echo "deploying $(git rev-parse --short HEAD)"
     cdk deploy --all
+
+# fail if this project has uncommitted or untracked changes
+clean:
+    @git diff --quiet HEAD -- . && test -z "$(git ls-files --others --exclude-standard -- .)" \
+      || (echo "uncommitted changes in hypertuning_llm, commit or stash first" && git status --short -- . && exit 1)
 
 # cdk destroy --all
 destroy: venv
