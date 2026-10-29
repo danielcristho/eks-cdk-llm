@@ -1,9 +1,4 @@
-"""Keep N requests in flight against vLLM for a while, logging tokens per request.
-
-Stdlib only, so it runs in a bare python:3.11-slim pod inside the cluster (`just load`).
-Ray Serve adds a replica once ongoing requests per replica stay above target_ongoing_requests (2),
-and a new GPU replica takes ~8 min to serve, so the default duration covers one scale-out.
-"""
+"""Load test for vLLM, stdlib only so it runs in a bare python pod (`just load`)."""
 import argparse
 import json
 import threading
@@ -44,7 +39,7 @@ def one_request(url: str, question: str, max_tokens: int) -> None:
             totals["latency"] += latency
         print(f"{time.strftime('%H:%M:%S')} 200 {latency:6.1f}s  prompt={usage['prompt_tokens']:4d} "
               f"completion={usage['completion_tokens']:4d} total={usage['total_tokens']:4d}", flush=True)
-    except Exception as e:  # keep the load going; errors are part of what we're measuring
+    except Exception as e:  # count it and keep the load going
         with lock:
             totals["err"] += 1
         print(f"{time.strftime('%H:%M:%S')} ERR {time.time() - start:6.1f}s  {e}", flush=True)

@@ -109,7 +109,7 @@ class KarpenterStack(Stack):
                                 {
                                     "key": "node.kubernetes.io/instance-type",
                                     "operator": "In",
-                                    "values": [os.environ["GPU_INSTANCE_TYPE"]],  # from .env
+                                    "values": [os.environ["GPU_INSTANCE_TYPE"]],
                                 },
                                 {
                                     "key": "karpenter.sh/capacity-type",
