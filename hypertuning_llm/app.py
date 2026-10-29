@@ -75,6 +75,7 @@ argocd_stack = ArgocdStack(
     "argocd-stack",
     cluster=eks_stack.cluster,
     repo_url=os.getenv("GITOPS_REPO_URL", "https://github.com/danielcristho/eks-cdk-mlops.git"),
+    revision=os.getenv("GITOPS_REVISION", "main"),
     model_bucket_name=eks_stack.model_bucket.bucket_name,
     script_sha=vllm_stack.script_sha,
     prerequisites=vllm_stack.prerequisites,

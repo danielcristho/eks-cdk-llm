@@ -1,5 +1,7 @@
 {{- $bucket := required "modelBucket is set by CDK" .Values.modelBucket }}
 {{- $region := required "region is set by CDK" .Values.region }}
+{{- $ray := required "rayVersion is set by CDK" .Values.rayVersion }}
+{{- $maxReplicas := required "maxReplicas is set by CDK" .Values.maxReplicas }}
 # Runs vLLM as a Ray Serve deployment, routes requests across replicas, autoscaler scales workers, Karpenter provisions GPU nodes
 apiVersion: ray.io/v1
 kind: RayService
@@ -14,17 +16,17 @@ spec:
         route_prefix: /
         runtime_env:
           pip:
-            - vllm==0.8.5
-            - ray[serve]==2.43.0
+            - vllm=={{ required "vllmVersion is set by CDK" .Values.vllmVersion }}
+            - ray[serve]=={{ $ray }}
             - numpy<2
           env_vars:
             PYTHONPATH: /serve-scripts
         args:
           model: /model-cache/current
-          served_model_name: qwen-lora
-          dtype: half
-          quantization: awq
-          max_model_len: 4096
+          served_model_name: {{ required "servedModelName is set by CDK" .Values.servedModelName }}
+          dtype: {{ required "dtype is set by CDK" .Values.dtype }}
+          quantization: {{ required "quantization is set by CDK" .Values.quantization }}
+          max_model_len: {{ required "maxModelLen is set by CDK" .Values.maxModelLen }}
           download_dir: /model-cache
           _script_sha: {{ .Values.scriptSha | quote }}
         deployments:
@@ -33,13 +35,13 @@ spec:
             autoscaling_config:
               # 1, not 0: a new cluster takes traffic once a replica has the new model loaded
               min_replicas: 1
-              max_replicas: 2  # set max 2 × g4dn.xlarge
+              max_replicas: {{ $maxReplicas }}  # set max 2 × g4dn.xlarge
               target_ongoing_requests: 2
             ray_actor_options:
               num_gpus: 1
               memory: 12288
   rayClusterConfig:
-    rayVersion: "2.43.0"
+    rayVersion: {{ $ray | quote }}
     enableInTreeAutoscaling: true
     headGroupSpec:
       rayStartParams:
@@ -54,7 +56,7 @@ spec:
             role: system
           containers:
             - name: ray-head
-              image: rayproject/ray:2.43.0-gpu
+              image: rayproject/ray:{{ $ray }}-gpu
               ports:
                 - {containerPort: 6379, name: gcs}
                 - {containerPort: 10001, name: client}
@@ -73,7 +75,7 @@ spec:
       - groupName: gpu-workers
         replicas: 0
         minReplicas: 0
-        maxReplicas: 2  # set max 2 × g4dn.xlarge
+        maxReplicas: {{ $maxReplicas }}  # set max 2 × g4dn.xlarge
         rayStartParams:
           num-gpus: "1"
         template:
@@ -89,7 +91,7 @@ spec:
             terminationGracePeriodSeconds: 120
             initContainers:
               - name: model-cache-sync
-                image: amazon/aws-cli:2.17.62
+                image: {{ required "awsCliImage is set by CDK" .Values.awsCliImage }}
                 command: ["sh", "-c", "aws s3 sync \"$MODEL_URI\" /model-cache/current"]
                 env:
                   - {name: AWS_DEFAULT_REGION, value: {{ $region | quote }}}
@@ -98,7 +100,7 @@ spec:
                   - {name: model-cache, mountPath: /model-cache}
             containers:
               - name: ray-worker
-                image: rayproject/ray:2.43.0-gpu
+                image: rayproject/ray:{{ $ray }}-gpu
                 resources:
                   requests: {cpu: "2", memory: 12Gi}
                   limits: {cpu: "4", memory: 14Gi, nvidia.com/gpu: "1"}

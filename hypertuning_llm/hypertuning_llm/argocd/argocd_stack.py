@@ -1,5 +1,20 @@
+import os
+
 from aws_cdk import Stack, CfnOutput, aws_eks as eks
 from constructs import Construct
+
+
+# chart value -> .env key; modelPrefix is not here on purpose, it lives in Git (manifests/vllm/values.yaml)
+CHART_ENV = {
+    "rayVersion": "RAY_VERSION",
+    "vllmVersion": "VLLM_VERSION",
+    "awsCliImage": "AWS_CLI_IMAGE",
+    "maxReplicas": "VLLM_MAX_REPLICAS",
+    "servedModelName": "SERVED_MODEL_NAME",
+    "dtype": "DTYPE",
+    "quantization": "QUANTIZATION",
+    "maxModelLen": "MAX_MODEL_LEN",
+}
 
 
 class ArgocdStack(Stack):
@@ -10,6 +25,7 @@ class ArgocdStack(Stack):
         construct_id: str,
         cluster: eks.Cluster,
         repo_url: str,
+        revision: str,
         model_bucket_name: str,
         script_sha: str,
         prerequisites: list,
@@ -56,13 +72,14 @@ class ArgocdStack(Stack):
                     "project": "default",
                     "source": {
                         "repoURL": repo_url,
-                        "targetRevision": "main",
+                        "targetRevision": revision,
                         "path": "hypertuning_llm/manifests/vllm",
                         "helm": {
                             "parameters": [
                                 {"name": "modelBucket", "value": model_bucket_name},
                                 {"name": "region", "value": self.region},
                                 {"name": "scriptSha", "value": script_sha},
+                                *({"name": k, "value": os.environ[v]} for k, v in CHART_ENV.items()),
                             ],
                         },
                     },
