@@ -4,7 +4,7 @@ from aws_cdk import Stack, CfnOutput, aws_eks as eks
 from constructs import Construct
 
 
-# chart value -> .env key; modelPrefix is not here on purpose, it lives in Git (manifests/vllm/values.yaml)
+# chart value -> .env key; modelPrefix stays in Git (manifests/vllm/values.yaml)
 CHART_ENV = {
     "rayVersion": "RAY_VERSION",
     "vllmVersion": "VLLM_VERSION",
@@ -43,20 +43,19 @@ class ArgocdStack(Stack):
             create_namespace=True,
             values={
                 "global": {"nodeSelector": {"role": "system"}},
-                # no SSO or notifications for a demo cluster, saves memory on the system nodes
+                # no SSO or notifications on a demo cluster
                 "dex": {"enabled": False},
                 "notifications": {"enabled": False},
                 "configs": {
-                    # UI over kubectl port-forward, so plain HTTP
+                    # plain HTTP behind port-forward
                     "params": {"server.insecure": True},
-                    # poll Git every ~30s instead of the default 120s + 60s jitter
+                    # poll Git every 30s (default 120s + 60s jitter)
                     "cm": {"timeout.reconciliation": "30s", "timeout.reconciliation.jitter": "0s"},
                 },
             },
         )
 
-        # Git holds which model is served (manifests/vllm/values.yaml); CDK fills in what this
-        # environment knows and the public repo shouldn't: bucket, region, serve script hash
+        # the model version comes from Git; bucket, region and script hash from CDK
         app = cluster.add_manifest(
             "VllmApplication",
             {
@@ -65,7 +64,7 @@ class ArgocdStack(Stack):
                 "metadata": {
                     "name": "vllm",
                     "namespace": "argocd",
-                    # deleting the Application deletes the RayService, so destroy doesn't strand GPU nodes
+                    # cascade delete to the RayService so destroy doesn't strand GPU nodes
                     "finalizers": ["resources-finalizer.argocd.argoproj.io"],
                 },
                 "spec": {
@@ -84,7 +83,6 @@ class ArgocdStack(Stack):
                         },
                     },
                     "destination": {"server": "https://kubernetes.default.svc", "namespace": "kuberay"},
-                    # selfHeal reverts manual kubectl edits back to what Git says
                     "syncPolicy": {"automated": {"prune": True, "selfHeal": True}},
                 },
             },

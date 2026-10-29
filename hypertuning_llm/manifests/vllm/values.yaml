@@ -1,9 +1,7 @@
-# The model being served. Changing this in Git is the rollout: Argo CD syncs it, KubeRay builds a new
-# RayCluster that pulls the new model from S3, and moves traffic once it serves. git revert rolls back.
+# Served model (S3 prefix). Changing it here is the rollout; git revert rolls back.
 modelPrefix: pipeline-output/model-v1
 
-# Set by CDK as Helm parameters on the Argo CD Application, from .env (see .env.example), so the
-# bucket name stays out of this public repo
+# Set by CDK from .env, keeps the bucket name out of this public repo
 modelBucket: ""
 region: ""
 scriptSha: ""

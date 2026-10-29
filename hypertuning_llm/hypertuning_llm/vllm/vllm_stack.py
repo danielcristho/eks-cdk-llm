@@ -14,7 +14,7 @@ class VllmStack(Stack):
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
 
-        # passed to the RayService so a serve_vllm.py change restarts the Serve app
+        # a serve_vllm.py change restarts the Serve app
         self.script_sha = hashlib.sha256(_load_serve_script().encode()).hexdigest()[:12]
         nvidia_plugin = cluster.add_helm_chart(
             "NvidiaDevicePlugin",
@@ -48,7 +48,7 @@ class VllmStack(Stack):
         )
         serve_configmap.node.add_dependency(kuberay_operator)
 
-        # The RayService itself lives in manifests/vllm (Helm chart synced by Argo CD); these are what it needs
+        # the RayService is in manifests/vllm, synced by Argo CD
         self.prerequisites = [serve_configmap, nvidia_plugin]
 
         CfnOutput(
