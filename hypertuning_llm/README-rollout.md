@@ -8,8 +8,8 @@ So in this post, we'll close that gap. vLLM loads the pipeline's model from S3, 
 
 - Each GPU worker pulls the model from S3 in an init container before vLLM starts. 1.6 GB synced in about 6 seconds through the S3 Gateway Endpoint.
 - vLLM serves it under a stable name, `qwen-lora`, so clients don't change when the model behind it does.
-- Model versions are write-once S3 prefixes (`pipeline-output/model-v1`, `pipeline-output/<run-id>`). `MODEL_PREFIX` picks which one gets served.
-- Changing `MODEL_PREFIX` makes KubeRay build a new RayCluster with the new model, and traffic moves once it serves. Rolling back is the same thing in reverse.
+- Model versions are write-once S3 prefixes (`pipeline-output/model-v1`, `pipeline-output/<run-id>`). `modelPrefix` in `manifests/vllm/values.yaml` picks which one gets served.
+- Switching models is a Git commit. Argo CD syncs it, KubeRay builds a new RayCluster with the new model, and traffic moves once it serves. Rolling back is `git revert`.
 - vLLM is reachable from inside the cluster, no public load balancer in front of the GPU.
 - A new GPU replica takes about 8 minutes from request to serving, and Karpenter accounts for less than one of them.
 
@@ -25,19 +25,21 @@ So in this post, we'll close that gap. vLLM loads the pipeline's model from S3, 
 
 Every model gets its own S3 prefix, and we write each prefix once. The problem with the previous post was `pipeline-output/latest`: every `pipeline_llm` run overwrites it, so the name stays the same while the model behind it changes. I copied that model to `pipeline-output/model-v1`. Runs of this project's pipeline write to `pipeline-output/<run-id>`, and a run ID is unique.
 
-`MODEL_PREFIX` in `.env` decides which version is served:
+Which version gets served lives in Git, in the vLLM chart's `manifests/vllm/values.yaml`:
 
-```
-MODEL_PREFIX=pipeline-output/model-v1
+```yaml
+modelPrefix: pipeline-output/model-v1
 ```
 
-<!-- TODO: why `latest` was a problem (Git/config says one thing, S3 contents change underneath), .env.example, `just deploy` refusing a dirty tree -->
+So if you want to know which model is running, look at Git. If you want to change it, commit. The S3 bucket name stays out of the repo: CDK reads it from `.env` and passes it to the chart.
+
+<!-- TODO: why `latest` was a problem (Git says one thing, S3 contents change underneath), Helm parameters from .env (bucket, region, versions), `just deploy` refusing a dirty tree -->
 
 ## Rolling Out Model B
 
 Model A is what's serving now: `pipeline-output/model-v1`. Model B is any newer version.
 
-<!-- TODO: MODEL_URI in rayClusterConfig vs serveConfigV2 (zero-downtime NewCluster upgrade vs in-place restart), KubeRay's default vllm-serve-svc (ClusterIP) follows the active cluster, min_replicas=1, 2x GPU during the switch, deploy_model step + RBAC for pipeline-runner, rollback = point MODEL_PREFIX back. Results from the live test: errors during the switch (Locust), time from change to traffic moved -->
+<!-- TODO: MODEL_URI in rayClusterConfig vs serveConfigV2 (zero-downtime NewCluster upgrade vs in-place restart), KubeRay's default vllm-serve-svc (ClusterIP) follows the active cluster, min_replicas=1, 2x GPU during the switch, Argo CD Application (repo, path, revision, selfHeal, finalizer), commit modelPrefix -> sync ~30s -> new RayCluster, rollback = git revert, deploy_model's kubectl patch now fights selfHeal (pipeline should commit instead), drift demo. Results from the live test: errors during the switch (Locust), time from change to traffic moved -->
 
 ## Keeping vLLM Private
 
@@ -69,7 +71,7 @@ Karpenter isn't the bottleneck here. Most of the time goes to pulling the Ray GP
 
 ## Deploy
 
-<!-- TODO: .env from .env.example, just deploy, just vllm-forward, cleanup order (delete ec2nodeclass gpu before just destroy) -->
+<!-- TODO: .env from .env.example (GITOPS_REVISION), just deploy, just argocd-ui, just vllm-forward, cleanup order (delete Application vllm, wait for GPU nodes, delete ec2nodeclass gpu, then just destroy) -->
 
 ## Conclusion
 

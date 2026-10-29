@@ -77,7 +77,7 @@ prepare_dataset -> tune_hyperparams -> [beats baseline?] -> finetune_lora -> qua
 
 ## Rolling Out the Winner
 
-<!-- TODO: deploy_model points the RayService at pipeline-output/<run-id>; the rollout itself is covered in README-rollout.md. Then set MODEL_PREFIX in .env to the same prefix, or the next `just deploy` rolls back to model-v1 -->
+<!-- TODO: deploy_model points the RayService at pipeline-output/<run-id>; the rollout itself is covered in README-rollout.md. With Argo CD, deploy_model's kubectl patch gets reverted by selfHeal; the pipeline should commit modelPrefix in manifests/vllm/values.yaml instead -->
 
 ## Results
 
