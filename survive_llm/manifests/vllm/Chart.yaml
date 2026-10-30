@@ -1,0 +1,4 @@
+apiVersion: v2
+name: vllm
+description: vLLM on Ray Serve (RayService), synced by Argo CD
+version: 0.1.0

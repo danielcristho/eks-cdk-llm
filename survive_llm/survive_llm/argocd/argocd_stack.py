@@ -1,0 +1,98 @@
+import os
+
+from aws_cdk import Stack, CfnOutput, aws_eks as eks
+from constructs import Construct
+
+
+# chart value -> .env key; modelPrefix stays in Git (manifests/vllm/values.yaml)
+CHART_ENV = {
+    "rayVersion": "RAY_VERSION",
+    "vllmVersion": "VLLM_VERSION",
+    "awsCliImage": "AWS_CLI_IMAGE",
+    "maxReplicas": "VLLM_MAX_REPLICAS",
+    "servedModelName": "SERVED_MODEL_NAME",
+    "dtype": "DTYPE",
+    "quantization": "QUANTIZATION",
+    "maxModelLen": "MAX_MODEL_LEN",
+}
+
+
+class ArgocdStack(Stack):
+
+    def __init__(
+        self,
+        scope: Construct,
+        construct_id: str,
+        cluster: eks.Cluster,
+        repo_url: str,
+        revision: str,
+        model_bucket_name: str,
+        script_sha: str,
+        prerequisites: list,
+        **kwargs,
+    ) -> None:
+        super().__init__(scope, construct_id, **kwargs)
+
+        argocd = cluster.add_helm_chart(
+            "ArgoCD",
+            chart="argo-cd",
+            repository="https://argoproj.github.io/argo-helm",
+            version="10.9.6",
+            release="argocd",
+            namespace="argocd",
+            create_namespace=True,
+            values={
+                "global": {"nodeSelector": {"role": "system"}},
+                # no SSO or notifications on a demo cluster
+                "dex": {"enabled": False},
+                "notifications": {"enabled": False},
+                "configs": {
+                    # plain HTTP behind port-forward
+                    "params": {"server.insecure": True},
+                    # poll Git every 30s (default 120s + 60s jitter)
+                    "cm": {"timeout.reconciliation": "30s", "timeout.reconciliation.jitter": "0s"},
+                },
+            },
+        )
+
+        # the model version comes from Git; bucket, region and script hash from CDK
+        app = cluster.add_manifest(
+            "VllmApplication",
+            {
+                "apiVersion": "argoproj.io/v1alpha1",
+                "kind": "Application",
+                "metadata": {
+                    "name": "vllm",
+                    "namespace": "argocd",
+                    # cascade delete to the RayService so destroy doesn't strand GPU nodes
+                    "finalizers": ["resources-finalizer.argocd.argoproj.io"],
+                },
+                "spec": {
+                    "project": "default",
+                    "source": {
+                        "repoURL": repo_url,
+                        "targetRevision": revision,
+                        "path": "survive_llm/manifests/vllm",
+                        "helm": {
+                            "parameters": [
+                                {"name": "modelBucket", "value": model_bucket_name},
+                                {"name": "region", "value": self.region},
+                                {"name": "scriptSha", "value": script_sha},
+                                *({"name": k, "value": os.environ[v]} for k, v in CHART_ENV.items()),
+                            ],
+                        },
+                    },
+                    "destination": {"server": "https://kubernetes.default.svc", "namespace": "kuberay"},
+                    "syncPolicy": {"automated": {"prune": True, "selfHeal": True}},
+                },
+            },
+        )
+        app.node.add_dependency(argocd)
+        for p in prerequisites:
+            app.node.add_dependency(p)
+
+        CfnOutput(
+            self, "ArgocdNote",
+            value="UI: just argocd-ui (localhost:8081, user admin). Password: just argocd-password",
+            description="How to reach Argo CD after deployment",
+        )

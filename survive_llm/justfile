@@ -1,0 +1,82 @@
+# Tuning LLM - Just Recipe
+# Run tasks with: just <task-name>
+
+# LOad dotenv
+set dotenv-load
+
+export JSII_RUNTIME_PACKAGE_CACHE := "disabled"
+export PATH := justfile_directory() + "/.venv/bin:" + env_var("PATH")
+
+default:
+    @just --list
+
+# create .venv and install requirements
+venv:
+    test -d .venv || (python3 -m venv .venv && .venv/bin/pip install -q -r requirements.txt -r requirements-dev.txt)
+
+# cdk synth
+synth: venv
+    cdk synth --quiet
+
+# cdk diff
+diff: venv
+    cdk diff
+
+# cdk deploy --all from a clean tree
+deploy: venv clean
+    @echo "deploying $(git rev-parse --short HEAD)"
+    cdk deploy --all
+
+# fail on uncommitted changes in this project
+clean:
+    @git diff --quiet HEAD -- . && test -z "$(git ls-files --others --exclude-standard -- .)" \
+      || (echo "uncommitted changes in survive_llm, commit or stash first" && git status --short -- . && exit 1)
+
+# cdk destroy --all
+destroy: venv
+    cdk destroy --all
+
+# point kubectl at this project's cluster
+kubeconfig:
+    aws eks update-kubeconfig --name $CLUSTER_NAME --region $AWS_DEFAULT_REGION
+
+# vLLM at localhost:8000
+vllm-forward:
+    kubectl port-forward -n kuberay svc/vllm-serve-svc 8000:8000
+
+# port-forward the KFP UI to localhost:8080
+kfp-ui:
+    kubectl port-forward -n kubeflow svc/ml-pipeline-ui 8080:80
+
+# compile finetune_pipeline.yaml
+compile: venv
+    python survive_llm/kubeflow/pipelines/finetune_pipeline.py
+
+# load test vLLM from a pod in the cluster: just load <concurrency> <seconds>
+load concurrency="8" duration="600":
+    kubectl run loadgen --rm -i --restart=Never -n kuberay --image=python:3.11-slim -- \
+      python -c "$(cat tests/load_test.py)" --concurrency {{concurrency}} --duration {{duration}}
+
+# Locust UI at localhost:8089, stop with `just locust-stop`
+locust:
+    kubectl create configmap locustfile -n kuberay --from-file=tests/locustfile.py --from-file=tests/load_test.py \
+      --dry-run=client -o yaml | kubectl apply -f -
+    kubectl apply -f manifests/locust-pod.yaml
+    kubectl wait -n kuberay --for=condition=Ready pod/locust --timeout=180s
+    @echo "open http://localhost:8089"
+    kubectl port-forward -n kuberay pod/locust 8089:8089
+
+locust-stop:
+    kubectl delete pod/locust configmap/locustfile -n kuberay --ignore-not-found
+
+# score the model on knowledge base questions (needs vllm-forward), --no-kb for the baseline
+eval *args:
+    python tests/eval_kb.py {{args}}
+
+# Argo CD UI at localhost:8081 (user admin)
+argocd-ui:
+    kubectl port-forward -n argocd svc/argocd-server 8081:80
+
+# initial admin password for the Argo CD UI
+argocd-password:
+    @kubectl get secret -n argocd argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d; echo

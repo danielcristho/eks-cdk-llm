@@ -1,0 +1,701 @@
+# PIPELINE DEFINITION
+# Name: qwen-lora-tune-finetune
+# Description: Prep data -> Ray Tune LoRA search -> if it beats the baseline: LoRA fine-tune -> AWQ quantize -> S3 -> roll out to vLLM
+# Inputs:
+#    base_model: str [Default: 'Qwen/Qwen2.5-1.5B-Instruct']
+#    bucket_name: str
+#    num_examples: int [Default: 200.0]
+#    num_trials: int [Default: 6.0]
+#    s3_prefix: str [Default: 'pipeline-output']
+#    tune_max_epochs: int [Default: 3.0]
+components:
+  comp-condition-1:
+    dag:
+      tasks:
+        deploy-model:
+          cachingOptions:
+            enableCache: true
+          componentRef:
+            name: comp-deploy-model
+          dependentTasks:
+          - quantize-and-upload
+          inputs:
+            parameters:
+              model_uri:
+                taskOutputParameter:
+                  outputParameterKey: Output
+                  producerTask: quantize-and-upload
+          taskInfo:
+            name: deploy-model
+        finetune-lora:
+          cachingOptions:
+            enableCache: true
+          componentRef:
+            name: comp-finetune-lora
+          inputs:
+            artifacts:
+              dataset_in:
+                componentInputArtifact: pipelinechannel--prepare-dataset-dataset_out
+            parameters:
+              base_model:
+                componentInputParameter: pipelinechannel--base_model
+              bucket_name:
+                componentInputParameter: pipelinechannel--bucket_name
+              epochs:
+                componentInputParameter: pipelinechannel--tune_max_epochs
+              learning_rate:
+                componentInputParameter: pipelinechannel--tune-hyperparams-learning_rate
+              lora_alpha:
+                componentInputParameter: pipelinechannel--tune-hyperparams-lora_alpha
+              lora_r:
+                componentInputParameter: pipelinechannel--tune-hyperparams-lora_r
+          taskInfo:
+            name: finetune-lora
+        quantize-and-upload:
+          cachingOptions:
+            enableCache: true
+          componentRef:
+            name: comp-quantize-and-upload
+          dependentTasks:
+          - finetune-lora
+          inputs:
+            artifacts:
+              model_in:
+                taskOutputArtifact:
+                  outputArtifactKey: model_out
+                  producerTask: finetune-lora
+            parameters:
+              bucket_name:
+                componentInputParameter: pipelinechannel--bucket_name
+              run_id:
+                runtimeValue:
+                  constant: '{{$.pipeline_job_uuid}}'
+              s3_prefix:
+                componentInputParameter: pipelinechannel--s3_prefix
+          taskInfo:
+            name: quantize-and-upload
+    inputDefinitions:
+      artifacts:
+        pipelinechannel--prepare-dataset-dataset_out:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+      parameters:
+        pipelinechannel--base_model:
+          parameterType: STRING
+        pipelinechannel--bucket_name:
+          parameterType: STRING
+        pipelinechannel--s3_prefix:
+          parameterType: STRING
+        pipelinechannel--tune-hyperparams-beats_baseline:
+          parameterType: BOOLEAN
+        pipelinechannel--tune-hyperparams-learning_rate:
+          parameterType: NUMBER_DOUBLE
+        pipelinechannel--tune-hyperparams-lora_alpha:
+          parameterType: NUMBER_INTEGER
+        pipelinechannel--tune-hyperparams-lora_r:
+          parameterType: NUMBER_INTEGER
+        pipelinechannel--tune_max_epochs:
+          parameterType: NUMBER_INTEGER
+  comp-deploy-model:
+    executorLabel: exec-deploy-model
+    inputDefinitions:
+      parameters:
+        model_uri:
+          parameterType: STRING
+  comp-finetune-lora:
+    executorLabel: exec-finetune-lora
+    inputDefinitions:
+      artifacts:
+        dataset_in:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+      parameters:
+        base_model:
+          defaultValue: Qwen/Qwen2.5-1.5B-Instruct
+          isOptional: true
+          parameterType: STRING
+        bucket_name:
+          parameterType: STRING
+        epochs:
+          defaultValue: 1.0
+          isOptional: true
+          parameterType: NUMBER_INTEGER
+        learning_rate:
+          defaultValue: 5.0e-05
+          isOptional: true
+          parameterType: NUMBER_DOUBLE
+        lora_alpha:
+          defaultValue: 32.0
+          isOptional: true
+          parameterType: NUMBER_INTEGER
+        lora_r:
+          defaultValue: 16.0
+          isOptional: true
+          parameterType: NUMBER_INTEGER
+    outputDefinitions:
+      artifacts:
+        model_out:
+          artifactType:
+            schemaTitle: system.Model
+            schemaVersion: 0.0.1
+  comp-prepare-dataset:
+    executorLabel: exec-prepare-dataset
+    inputDefinitions:
+      parameters:
+        num_examples:
+          defaultValue: 200.0
+          isOptional: true
+          parameterType: NUMBER_INTEGER
+    outputDefinitions:
+      artifacts:
+        dataset_out:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+  comp-quantize-and-upload:
+    executorLabel: exec-quantize-and-upload
+    inputDefinitions:
+      artifacts:
+        model_in:
+          artifactType:
+            schemaTitle: system.Model
+            schemaVersion: 0.0.1
+      parameters:
+        bucket_name:
+          parameterType: STRING
+        run_id:
+          parameterType: STRING
+        s3_prefix:
+          parameterType: STRING
+    outputDefinitions:
+      parameters:
+        Output:
+          parameterType: STRING
+  comp-tune-hyperparams:
+    executorLabel: exec-tune-hyperparams
+    inputDefinitions:
+      artifacts:
+        dataset_in:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+      parameters:
+        base_model:
+          defaultValue: Qwen/Qwen2.5-1.5B-Instruct
+          isOptional: true
+          parameterType: STRING
+        bucket_name:
+          parameterType: STRING
+        max_epochs:
+          defaultValue: 3.0
+          isOptional: true
+          parameterType: NUMBER_INTEGER
+        num_trials:
+          defaultValue: 6.0
+          isOptional: true
+          parameterType: NUMBER_INTEGER
+    outputDefinitions:
+      artifacts:
+        trials_report:
+          artifactType:
+            schemaTitle: system.Markdown
+            schemaVersion: 0.0.1
+      parameters:
+        beats_baseline:
+          parameterType: BOOLEAN
+        learning_rate:
+          parameterType: NUMBER_DOUBLE
+        lora_alpha:
+          parameterType: NUMBER_INTEGER
+        lora_r:
+          parameterType: NUMBER_INTEGER
+deploymentSpec:
+  executors:
+    exec-deploy-model:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - deploy_model
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.13.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"'  &&\
+          \  python3 -m pip install --quiet --no-warn-script-location 'kubernetes==31.0.0'\
+          \ && \"$0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef deploy_model(model_uri: str):\n    \"\"\"Point the vllm RayService\
+          \ at model_uri. Since MODEL_URI sits in rayClusterConfig, KubeRay brings\
+          \ up a\n    new cluster with the new model and moves traffic over only once\
+          \ it is serving (zero-downtime upgrade).\"\"\"\n    from kubernetes import\
+          \ client, config\n\n    config.load_incluster_config()\n    api = client.CustomObjectsApi()\n\
+          \    svc = api.get_namespaced_custom_object(\"ray.io\", \"v1\", \"kuberay\"\
+          , \"rayservices\", \"vllm\")\n    for group in svc[\"spec\"][\"rayClusterConfig\"\
+          ][\"workerGroupSpecs\"]:\n        pod = group[\"template\"][\"spec\"]\n\
+          \        for container in pod.get(\"initContainers\", []) + pod[\"containers\"\
+          ]:\n            for env in container.get(\"env\", []):\n               \
+          \ if env[\"name\"] == \"MODEL_URI\":\n                    env[\"value\"\
+          ] = model_uri\n    api.replace_namespaced_custom_object(\"ray.io\", \"v1\"\
+          , \"kuberay\", \"rayservices\", \"vllm\", svc)\n    print(f\"vllm RayService\
+          \ now points at {model_uri}\")\n\n"
+        image: python:3.11-slim
+    exec-finetune-lora:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - finetune_lora
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.13.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"'  &&\
+          \  python3 -m pip install --quiet --no-warn-script-location 'transformers==4.44.2'\
+          \ 'peft==0.12.0' 'accelerate==0.33.0' 'datasets==2.21.0' 'boto3>=1.28.0'\
+          \ 'pyarrow<17' && \"$0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef finetune_lora(\n    dataset_in: dsl.Input[dsl.Dataset],\n   \
+          \ model_out: dsl.Output[dsl.Model],\n    bucket_name: str,\n    base_model:\
+          \ str = \"Qwen/Qwen2.5-1.5B-Instruct\",\n    epochs: int = 1,\n    lora_r:\
+          \ int = 16,\n    lora_alpha: int = 32,\n    learning_rate: float = 5e-5,\n\
+          ):\n    \"\"\"LoRA fine-tune base_model on the prepared dataset, then merge\
+          \ and save full weights.\"\"\"\n    import os\n    import torch\n    import\
+          \ boto3\n    from datasets import load_dataset\n    from huggingface_hub\
+          \ import snapshot_download\n    from peft import LoraConfig, get_peft_model\n\
+          \    from transformers import AutoModelForCausalLM, AutoTokenizer, Trainer,\
+          \ TrainingArguments\n\n    \"\"\"\n    Base weights get pulled from Hugging\
+          \ Face once and cached in S3 (behind a VPC gateway\n    endpoint, so reads\
+          \ are free, no NAT charge); every retry after that loads from S3 instead\n\
+          \    of re-downloading over the internet. Debugging sessions retry this\
+          \ step a lot, and repeated\n    multi-GB downloads through NAT were the\
+          \ single biggest cost driver the last time around.\n    \"\"\"\n    # not\
+          \ \"model-cache/\" - vllm_stack.py's init container already syncs that whole\
+          \ prefix\n    # for the serving model, and would needlessly pull this raw\
+          \ base-model cache down too\n    cache_prefix = f\"base-model-cache/{base_model.replace('/',\
+          \ '_')}\"\n    local_dir = \"/tmp/base-model\"\n    s3 = boto3.client(\"\
+          s3\")\n    try:\n        s3.head_object(Bucket=bucket_name, Key=f\"{cache_prefix}/config.json\"\
+          )\n        cached = True\n    except s3.exceptions.ClientError:\n      \
+          \  cached = False\n\n    if cached:\n        for page in s3.get_paginator(\"\
+          list_objects_v2\").paginate(Bucket=bucket_name, Prefix=f\"{cache_prefix}/\"\
+          ):\n            for obj in page.get(\"Contents\", []):\n               \
+          \ dest = os.path.join(local_dir, obj[\"Key\"][len(cache_prefix) + 1:])\n\
+          \                os.makedirs(os.path.dirname(dest), exist_ok=True)\n   \
+          \             s3.download_file(bucket_name, obj[\"Key\"], dest)\n    else:\n\
+          \        snapshot_download(repo_id=base_model, local_dir=local_dir)\n  \
+          \      for root, _, files in os.walk(local_dir):\n            for name in\
+          \ files:\n                path = os.path.join(root, name)\n            \
+          \    s3.upload_file(path, bucket_name, f\"{cache_prefix}/{os.path.relpath(path,\
+          \ local_dir)}\")\n\n    tokenizer = AutoTokenizer.from_pretrained(local_dir)\n\
+          \    tokenizer.pad_token = tokenizer.pad_token or tokenizer.eos_token\n\n\
+          \    use_gpu = torch.cuda.is_available()\n    model = AutoModelForCausalLM.from_pretrained(\n\
+          \        local_dir,\n        torch_dtype=torch.float16 if use_gpu else torch.float32,\n\
+          \        device_map={\"\": 0} if use_gpu else None,\n    )\n    model =\
+          \ get_peft_model(model, LoraConfig(r=lora_r, lora_alpha=lora_alpha, lora_dropout=0.05,\
+          \ task_type=\"CAUSAL_LM\"))\n\n    def tokenize(batch):\n        out = tokenizer(batch[\"\
+          text\"], truncation=True, max_length=512, padding=\"max_length\")\n    \
+          \    out[\"labels\"] = out[\"input_ids\"].copy()  # causal LM: Trainer needs\
+          \ labels to compute loss\n        return out\n\n    ds = load_dataset(\"\
+          json\", data_files=dataset_in.path, split=\"train\")\n    ds = ds.map(tokenize,\
+          \ batched=True, remove_columns=ds.column_names)\n\n    Trainer(\n      \
+          \  model=model,\n        args=TrainingArguments(\n            output_dir=\"\
+          /tmp/lora-out\",\n            num_train_epochs=epochs,\n            per_device_train_batch_size=4,\n\
+          \            gradient_accumulation_steps=2,\n            learning_rate=learning_rate,\n\
+          \            logging_steps=10,\n            save_strategy=\"no\",\n    \
+          \        fp16=use_gpu,\n            report_to=[],\n        ),\n        train_dataset=ds,\n\
+          \    ).train()\n\n    merged = model.merge_and_unload()\n    merged.save_pretrained(model_out.path)\n\
+          \    tokenizer.save_pretrained(model_out.path)\n\n"
+        image: pytorch/pytorch:2.4.0-cuda12.1-cudnn9-runtime
+        resources:
+          accelerator:
+            count: '1'
+            resourceCount: '1'
+            resourceType: nvidia.com/gpu
+            type: nvidia.com/gpu
+    exec-prepare-dataset:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - prepare_dataset
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.13.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"'  &&\
+          \  python3 -m pip install --quiet --no-warn-script-location 'datasets==2.21.0'\
+          \ && \"$0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef prepare_dataset(dataset_out: dsl.Output[dsl.Dataset], num_examples:\
+          \ int = 200):\n    \"\"\"Pull a small instruction-tuning subset and write\
+          \ it as JSONL.\"\"\"\n    from datasets import load_dataset\n\n    ds =\
+          \ load_dataset(\"mlabonne/guanaco-llama2-1k\", split=f\"train[:{num_examples}]\"\
+          )\n    ds.to_json(dataset_out.path)\n\n"
+        image: python:3.11-slim
+    exec-quantize-and-upload:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - quantize_and_upload
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.13.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"'  &&\
+          \  python3 -m pip install --quiet --no-warn-script-location 'autoawq==0.2.6'\
+          \ 'transformers==4.44.2' 'boto3>=1.28.0' && \"$0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef quantize_and_upload(model_in: dsl.Input[dsl.Model], bucket_name:\
+          \ str, s3_prefix: str, run_id: str) -> str:\n    \"\"\"AWQ-quantize the\
+          \ merged model, then push it to its own versioned S3 prefix; returns the\
+          \ model's S3 URI.\"\"\"\n    import pathlib\n    import subprocess\n\n \
+          \   \"\"\"\n    autoawq/transformers pull in a torchvision build incompatible\
+          \ with this image's torch==2.4.0\n    (AttributeError: torch.library has\
+          \ no attribute register_fake), even when torchvision is\n    pinned to a\
+          \ matching version. We have no use for torchvision at all here (text-only\
+          \ model),\n    and transformers gracefully skips its vision imports when\
+          \ the package isn't installed, so\n    just remove it before transformers/awq\
+          \ ever get imported.\n    \"\"\"\n    subprocess.run([\"pip\", \"uninstall\"\
+          , \"-y\", \"-q\", \"torchvision\"], check=False)\n\n    import boto3\n \
+          \   from awq import AutoAWQForCausalLM\n    from transformers import AutoTokenizer\n\
+          \n    tokenizer = AutoTokenizer.from_pretrained(model_in.path)\n    model\
+          \ = AutoAWQForCausalLM.from_pretrained(model_in.path)\n    model.quantize(tokenizer,\
+          \ quant_config={\"zero_point\": True, \"q_group_size\": 128, \"w_bit\":\
+          \ 4, \"version\": \"GEMM\"})\n\n    out_dir = pathlib.Path(\"/tmp/awq-out\"\
+          )\n    model.save_quantized(str(out_dir))\n    tokenizer.save_pretrained(str(out_dir))\n\
+          \n    # one prefix per run, so the model being replaced stays in S3 for\
+          \ rollback\n    prefix = f\"{s3_prefix}/{run_id}\"\n    s3 = boto3.client(\"\
+          s3\")\n    for f in out_dir.rglob(\"*\"):\n        if f.is_file():\n   \
+          \         s3.upload_file(str(f), bucket_name, f\"{prefix}/{f.name}\")\n\
+          \    return f\"s3://{bucket_name}/{prefix}\"\n\n"
+        image: pytorch/pytorch:2.4.0-cuda12.1-cudnn9-runtime
+        resources:
+          accelerator:
+            count: '1'
+            resourceCount: '1'
+            resourceType: nvidia.com/gpu
+            type: nvidia.com/gpu
+    exec-tune-hyperparams:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - tune_hyperparams
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.13.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"'  &&\
+          \  python3 -m pip install --quiet --no-warn-script-location 'transformers==4.44.2'\
+          \ 'peft==0.12.0' 'accelerate==0.33.0' 'datasets==2.21.0' 'boto3>=1.28.0'\
+          \ 'pyarrow<17' 'ray[tune]==2.40.0' && \"$0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef tune_hyperparams(\n    dataset_in: dsl.Input[dsl.Dataset],\n\
+          \    trials_report: dsl.Output[dsl.Markdown],\n    bucket_name: str,\n \
+          \   base_model: str = \"Qwen/Qwen2.5-1.5B-Instruct\",\n    num_trials: int\
+          \ = 6,\n    max_epochs: int = 3,\n) -> NamedTuple(\"BestConfig\", [(\"lora_r\"\
+          , int), (\"lora_alpha\", int), (\"learning_rate\", float), (\"beats_baseline\"\
+          , bool)]):\n    \"\"\"Search LoRA rank, alpha, and learning rate with Ray\
+          \ Tune + ASHA; return the best config.\"\"\"\n    import os\n    from collections\
+          \ import namedtuple\n\n    import boto3\n    import ray\n    import torch\n\
+          \    from datasets import load_dataset\n    from huggingface_hub import\
+          \ snapshot_download\n    from ray import train, tune\n    from ray.tune.schedulers\
+          \ import ASHAScheduler\n    from ray.tune.search import BasicVariantGenerator\n\
+          \n    # pipeline_llm's hand-picked defaults, run as one of the trials so\
+          \ the report shows where they rank\n    baseline = {\"lora_r\": 16, \"lora_alpha\"\
+          : 32, \"learning_rate\": 5e-5}\n\n    # same S3 base-model cache as finetune_lora,\
+          \ so the search skips the Hugging Face download through NAT\n    cache_prefix\
+          \ = f\"base-model-cache/{base_model.replace('/', '_')}\"\n    local_dir\
+          \ = \"/tmp/base-model\"\n    s3 = boto3.client(\"s3\")\n    try:\n     \
+          \   s3.head_object(Bucket=bucket_name, Key=f\"{cache_prefix}/config.json\"\
+          )\n        cached = True\n    except s3.exceptions.ClientError:\n      \
+          \  cached = False\n\n    if cached:\n        for page in s3.get_paginator(\"\
+          list_objects_v2\").paginate(Bucket=bucket_name, Prefix=f\"{cache_prefix}/\"\
+          ):\n            for obj in page.get(\"Contents\", []):\n               \
+          \ dest = os.path.join(local_dir, obj[\"Key\"][len(cache_prefix) + 1:])\n\
+          \                os.makedirs(os.path.dirname(dest), exist_ok=True)\n   \
+          \             s3.download_file(bucket_name, obj[\"Key\"], dest)\n    else:\n\
+          \        snapshot_download(repo_id=base_model, local_dir=local_dir)\n  \
+          \      for root, _, files in os.walk(local_dir):\n            for name in\
+          \ files:\n                path = os.path.join(root, name)\n            \
+          \    s3.upload_file(path, bucket_name, f\"{cache_prefix}/{os.path.relpath(path,\
+          \ local_dir)}\")\n\n    splits = load_dataset(\"json\", data_files=dataset_in.path,\
+          \ split=\"train\").train_test_split(test_size=0.2, seed=42)\n    train_path,\
+          \ eval_path = \"/tmp/tune-train.jsonl\", \"/tmp/tune-eval.jsonl\"\n    splits[\"\
+          train\"].to_json(train_path)\n    splits[\"test\"].to_json(eval_path)\n\n\
+          \    use_gpu = torch.cuda.is_available()\n\n    def trial(config):\n   \
+          \     import torch\n        from datasets import load_dataset\n        from\
+          \ peft import LoraConfig, get_peft_model\n        from ray import train\n\
+          \        from transformers import AutoModelForCausalLM, AutoTokenizer, Trainer,\
+          \ TrainerCallback, TrainingArguments\n\n        tokenizer = AutoTokenizer.from_pretrained(local_dir)\n\
+          \        tokenizer.pad_token = tokenizer.pad_token or tokenizer.eos_token\n\
+          \n        def tokenize(batch):\n            out = tokenizer(batch[\"text\"\
+          ], truncation=True, max_length=512, padding=\"max_length\")\n          \
+          \  out[\"labels\"] = out[\"input_ids\"].copy()\n            return out\n\
+          \n        train_ds = load_dataset(\"json\", data_files=train_path, split=\"\
+          train\").map(tokenize, batched=True, remove_columns=[\"text\"])\n      \
+          \  eval_ds = load_dataset(\"json\", data_files=eval_path, split=\"train\"\
+          ).map(tokenize, batched=True, remove_columns=[\"text\"])\n\n        model\
+          \ = AutoModelForCausalLM.from_pretrained(\n            local_dir,\n    \
+          \        torch_dtype=torch.float16 if use_gpu else torch.float32,\n    \
+          \        device_map={\"\": 0} if use_gpu else None,\n        )\n       \
+          \ model = get_peft_model(model, LoraConfig(\n            r=config[\"lora_r\"\
+          ], lora_alpha=config[\"lora_alpha\"], lora_dropout=0.05, task_type=\"CAUSAL_LM\"\
+          ,\n        ))\n\n        # one report per epoch is what ASHA compares trials\
+          \ on, and where it stops the losers\n        class ReportToTune(TrainerCallback):\n\
+          \            def on_evaluate(self, args, state, control, metrics=None, **kwargs):\n\
+          \                train.report({\"eval_loss\": metrics[\"eval_loss\"], \"\
+          epoch\": state.epoch})\n\n        Trainer(\n            model=model,\n \
+          \           args=TrainingArguments(\n                output_dir=\"/tmp/tune-out\"\
+          ,\n                num_train_epochs=max_epochs,\n                per_device_train_batch_size=4,\n\
+          \                gradient_accumulation_steps=2,\n                learning_rate=config[\"\
+          learning_rate\"],\n                eval_strategy=\"epoch\",\n          \
+          \      save_strategy=\"no\",\n                logging_steps=10,\n      \
+          \          fp16=use_gpu,\n                report_to=[],\n            ),\n\
+          \            train_dataset=train_ds,\n            eval_dataset=eval_ds,\n\
+          \            callbacks=[ReportToTune()],\n        ).train()\n\n    ray.init(num_gpus=1\
+          \ if use_gpu else 0, include_dashboard=False)\n    tuner = tune.Tuner(\n\
+          \        tune.with_resources(trial, {\"cpu\": 2, \"gpu\": 1 if use_gpu else\
+          \ 0}),\n        param_space={\n            \"lora_r\": tune.choice([8, 16,\
+          \ 32]),\n            \"lora_alpha\": tune.choice([16, 32, 64]),\n      \
+          \      \"learning_rate\": tune.loguniform(5e-5, 5e-4),\n        },\n   \
+          \     tune_config=tune.TuneConfig(\n            metric=\"eval_loss\",\n\
+          \            mode=\"min\",\n            num_samples=num_trials,\n      \
+          \      search_alg=BasicVariantGenerator(points_to_evaluate=[baseline]),\n\
+          \            # one T4, one trial at a time (also keeps CPU smoke runs from\
+          \ running trials in parallel)\n            max_concurrent_trials=1,\n  \
+          \          scheduler=ASHAScheduler(max_t=max_epochs, grace_period=1, reduction_factor=2),\n\
+          \            # a fresh worker process per trial, so each trial's GPU memory\
+          \ is released when it ends\n            reuse_actors=False,\n        ),\n\
+          \        run_config=train.RunConfig(storage_path=\"/tmp/ray-results\", name=\"\
+          lora-tune\"),\n    )\n    results = tuner.fit()\n    best = results.get_best_result()\n\
+          \n    df = results.get_dataframe()\n    rows = [\n        f\"| {r['config/lora_r']}\
+          \ | {r['config/lora_alpha']} | {r['config/learning_rate']:.2e} \"\n    \
+          \    f\"| {int(r['training_iteration'])} | {r['eval_loss']:.4f} \"\n   \
+          \     f\"| {'baseline' if all(r[f'config/{k}'] == v for k, v in baseline.items())\
+          \ else ''} |\"\n        for _, r in df.sort_values(\"eval_loss\").iterrows()\n\
+          \    ]\n    report = \"\\n\".join([\n        \"| lora_r | lora_alpha | learning_rate\
+          \ | epochs run | eval_loss | note |\",\n        \"|---|---|---|---|---|---|\"\
+          ,\n        *rows,\n    ])\n    print(report)\n    with open(trials_report.path,\
+          \ \"w\") as f:\n        f.write(report)\n\n    BestConfig = namedtuple(\"\
+          BestConfig\", [\"lora_r\", \"lora_alpha\", \"learning_rate\", \"beats_baseline\"\
+          ])\n    return BestConfig(\n        best.config[\"lora_r\"], best.config[\"\
+          lora_alpha\"], best.config[\"learning_rate\"], best.config != baseline,\n\
+          \    )\n\n"
+        image: pytorch/pytorch:2.4.0-cuda12.1-cudnn9-runtime
+        resources:
+          accelerator:
+            count: '1'
+            resourceCount: '1'
+            resourceType: nvidia.com/gpu
+            type: nvidia.com/gpu
+pipelineInfo:
+  description: 'Prep data -> Ray Tune LoRA search -> if it beats the baseline: LoRA
+    fine-tune -> AWQ quantize -> S3 -> roll out to vLLM'
+  name: qwen-lora-tune-finetune
+root:
+  dag:
+    tasks:
+      condition-1:
+        componentRef:
+          name: comp-condition-1
+        dependentTasks:
+        - prepare-dataset
+        - tune-hyperparams
+        inputs:
+          artifacts:
+            pipelinechannel--prepare-dataset-dataset_out:
+              taskOutputArtifact:
+                outputArtifactKey: dataset_out
+                producerTask: prepare-dataset
+          parameters:
+            pipelinechannel--base_model:
+              componentInputParameter: base_model
+            pipelinechannel--bucket_name:
+              componentInputParameter: bucket_name
+            pipelinechannel--s3_prefix:
+              componentInputParameter: s3_prefix
+            pipelinechannel--tune-hyperparams-beats_baseline:
+              taskOutputParameter:
+                outputParameterKey: beats_baseline
+                producerTask: tune-hyperparams
+            pipelinechannel--tune-hyperparams-learning_rate:
+              taskOutputParameter:
+                outputParameterKey: learning_rate
+                producerTask: tune-hyperparams
+            pipelinechannel--tune-hyperparams-lora_alpha:
+              taskOutputParameter:
+                outputParameterKey: lora_alpha
+                producerTask: tune-hyperparams
+            pipelinechannel--tune-hyperparams-lora_r:
+              taskOutputParameter:
+                outputParameterKey: lora_r
+                producerTask: tune-hyperparams
+            pipelinechannel--tune_max_epochs:
+              componentInputParameter: tune_max_epochs
+        taskInfo:
+          name: condition-1
+        triggerPolicy:
+          condition: inputs.parameter_values['pipelinechannel--tune-hyperparams-beats_baseline']
+            == true
+      prepare-dataset:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-prepare-dataset
+        inputs:
+          parameters:
+            num_examples:
+              componentInputParameter: num_examples
+        taskInfo:
+          name: prepare-dataset
+      tune-hyperparams:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-tune-hyperparams
+        dependentTasks:
+        - prepare-dataset
+        inputs:
+          artifacts:
+            dataset_in:
+              taskOutputArtifact:
+                outputArtifactKey: dataset_out
+                producerTask: prepare-dataset
+          parameters:
+            base_model:
+              componentInputParameter: base_model
+            bucket_name:
+              componentInputParameter: bucket_name
+            max_epochs:
+              componentInputParameter: tune_max_epochs
+            num_trials:
+              componentInputParameter: num_trials
+        taskInfo:
+          name: tune-hyperparams
+  inputDefinitions:
+    parameters:
+      base_model:
+        defaultValue: Qwen/Qwen2.5-1.5B-Instruct
+        isOptional: true
+        parameterType: STRING
+      bucket_name:
+        parameterType: STRING
+      num_examples:
+        defaultValue: 200.0
+        isOptional: true
+        parameterType: NUMBER_INTEGER
+      num_trials:
+        defaultValue: 6.0
+        isOptional: true
+        parameterType: NUMBER_INTEGER
+      s3_prefix:
+        defaultValue: pipeline-output
+        isOptional: true
+        parameterType: STRING
+      tune_max_epochs:
+        defaultValue: 3.0
+        isOptional: true
+        parameterType: NUMBER_INTEGER
+schemaVersion: 2.1.0
+sdkVersion: kfp-2.13.0
+---
+platforms:
+  kubernetes:
+    deploymentSpec:
+      executors:
+        exec-finetune-lora:
+          nodeSelector:
+            labels:
+              workload: gpu
+          tolerations:
+          - effect: NoSchedule
+            key: nvidia.com/gpu
+            operator: Equal
+            value: 'true'
+        exec-quantize-and-upload:
+          nodeSelector:
+            labels:
+              workload: gpu
+          tolerations:
+          - effect: NoSchedule
+            key: nvidia.com/gpu
+            operator: Equal
+            value: 'true'
+        exec-tune-hyperparams:
+          nodeSelector:
+            labels:
+              workload: gpu
+          tolerations:
+          - effect: NoSchedule
+            key: nvidia.com/gpu
+            operator: Equal
+            value: 'true'
