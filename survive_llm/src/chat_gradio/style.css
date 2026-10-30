@@ -1,99 +1,216 @@
-:root,
+/* palette from jakarta.awscommunity.id/comday; Gradio's own tokens cover surfaces and text */
+:root {
+  --orange: #f97316;
+  --pink: #ec4899;
+  --purple: #a855f7;
+  --brand: linear-gradient(90deg, var(--orange), var(--pink), var(--purple));
+  --pill-bg: rgba(249, 115, 22, 0.1);
+  --pill-line: rgba(249, 115, 22, 0.3);
+  --pill-ink: #ea580c;
+  --user-bubble: rgba(249, 115, 22, 0.1);
+  --glow: rgba(168, 85, 247, 0.08);
+  --page-x: 24px;
+  --space: 16px;
+}
+
 .dark {
-  --ink: #2b2b2b;
-  --muted: #6b6b6b;
-  --paper: #fbfaf6;
-  --line: #a0a0a0;
-  --mark: #ffe9a8;
+  --pill-ink: #fb923c;
+  --user-bubble: rgba(249, 115, 22, 0.14);
+  --glow: rgba(120, 119, 198, 0.22);
 }
 
-body,
-gradio-app,
-.gradio-container {
-  background: var(--paper) !important;
+body {
+  background: var(--body-background-fill);
 }
 
+/* one page edge for every section; Gradio's own .main and HTML block padding would add more */
 .gradio-container {
-  max-width: 1100px !important;
+  width: 100% !important;
+  max-width: 1180px !important;
   margin: auto;
-  color: var(--ink);
+  background: radial-gradient(ellipse 60% 40% at 50% -10%, var(--glow), transparent) !important;
 }
 
-.gradio-container * {
-  box-shadow: none !important;
+.gradio-container .main {
+  padding: var(--space) var(--page-x) !important;
 }
 
-.block,
-.form,
-.panel {
-  background: transparent !important;
-  border: none !important;
+#top .html-container {
+  padding: 0 !important;
 }
 
 footer {
   display: none !important;
 }
 
+/* header */
+
+#top {
+  align-items: flex-start;
+  flex-wrap: nowrap;
+}
 
 #hero {
-  padding: 8px 4px 14px;
-  border-bottom: 2px dashed var(--line);
+  padding: 8px 0 4px;
+}
+
+#hero .pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px;
+  border: 1px solid var(--pill-line);
+  border-radius: 999px;
+  background: var(--pill-bg);
+  color: var(--pill-ink);
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+#hero .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--orange);
+  box-shadow: 0 0 0 3px var(--pill-bg);
 }
 
 #hero h1 {
-  margin: 0;
-  font-size: 1.9rem;
-  color: var(--ink);
+  margin: 12px 0 6px;
+  font-size: clamp(1.6rem, 4vw, 2.6rem);
+  font-weight: 800;
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+  color: var(--body-text-color);
 }
 
-#hero h1 mark {
-  padding: 0 6px;
-  background: var(--mark);
+#hero .grad {
+  background-image: var(--brand) !important;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
 }
 
 #hero p {
-  margin: 4px 0 0;
-  color: var(--muted);
+  margin: 0;
+  color: var(--body-text-color-subdued);
 }
+
+#hero .chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+#hero .chips span {
+  padding: 6px 12px;
+  border: 1px solid var(--block-border-color);
+  border-radius: 12px;
+  background: var(--block-background-fill);
+  color: var(--body-text-color);
+  font-size: 0.82rem;
+}
+
+#theme-toggle {
+  margin-top: 8px;
+  width: 44px;
+  height: 44px;
+  border: 1px solid var(--block-border-color) !important;
+  border-radius: 999px !important;
+  background: var(--block-background-fill) !important;
+  font-size: 1.2rem;
+}
+
+#theme-toggle:hover {
+  border-color: var(--pill-line) !important;
+  color: var(--pill-ink);
+}
+
+/* chat */
 
 #chat {
-  border: 2px solid var(--ink) !important;
-  border-radius: 14px 18px 12px 16px !important;
+  border: 1px solid var(--block-border-color) !important;
+  border-radius: 20px !important;
+  background: var(--block-background-fill) !important;
 }
 
-.message.bot {
-  background: #fff !important;
-  border: 1.5px solid var(--line) !important;
+#chat .message.user {
+  background: var(--user-bubble) !important;
+  border: 1px solid var(--pill-line) !important;
 }
 
-.message.user {
-  background: var(--mark) !important;
-  border: 1.5px solid var(--ink) !important;
+#chat .placeholder-content {
+  padding: var(--space) !important;
 }
 
-button.example {
-  background: #fff !important;
-  border: 1.5px dashed var(--line) !important;
+#chat .placeholder h3 {
+  font-weight: 800;
+}
+
+#chat button.example,
+#chat .example {
+  border: 1px solid var(--block-border-color) !important;
+  border-radius: 14px !important;
+  background: var(--body-background-fill) !important;
+  transition: border-color 0.15s, transform 0.15s;
+}
+
+#chat button.example:hover,
+#chat .example:hover {
+  border-color: var(--pill-line) !important;
+  transform: translateY(-1px);
 }
 
 textarea {
-  background: #fff !important;
-  border: 2px solid var(--ink) !important;
-  border-radius: 12px !important;
+  border-radius: 14px !important;
 }
 
-#sources {
-  padding: 4px 14px !important;
-  border: 2px dashed var(--line) !important;
-  border-radius: 12px;
+textarea:focus {
+  border-color: var(--orange) !important;
 }
 
-#sources li {
-  margin-bottom: 6px;
+/* log and footer */
+
+#log-panel {
+  border-radius: 16px !important;
 }
 
 #log textarea {
-  font-family: ui-monospace, monospace !important;
-  font-size: 0.8rem !important;
-  border: 2px dashed var(--line) !important;
+  font-family: var(--font-mono) !important;
+  font-size: 0.78rem !important;
+}
+
+#footnote {
+  padding: 8px 0 var(--space);
+  color: var(--body-text-color-subdued);
+  font-size: 0.8rem;
+  text-align: center;
+}
+
+#footnote a {
+  color: var(--pill-ink);
+}
+
+/* phones: history list above the chat, kept short */
+
+@media (max-width: 768px) {
+  :root {
+    --page-x: 16px;
+    --space: 12px;
+  }
+
+  #hero .chips span {
+    font-size: 0.75rem;
+  }
+
+  #chat {
+    height: 68vh !important;
+  }
+
+  .gradio-container .table-wrap,
+  .gradio-container .gallery {
+    max-height: 132px;
+    overflow-y: auto;
+  }
 }

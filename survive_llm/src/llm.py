@@ -9,10 +9,13 @@ class Stats:
     prompt_tokens: int
     completion_tokens: int
 
+    @property
+    def tok_s(self) -> float:
+        return self.completion_tokens / max(self.total - self.ttft, 1e-6)
+
     def line(self) -> str:
-        tok_s = self.completion_tokens / max(self.total - self.ttft, 1e-6)
         return (f"{time.strftime('%H:%M:%S')}  ttft {self.ttft:.2f}s  total {self.total:.1f}s  "
-                f"prompt {self.prompt_tokens}  completion {self.completion_tokens}  {tok_s:.0f} tok/s")
+                f"prompt {self.prompt_tokens}  completion {self.completion_tokens}  {self.tok_s:.0f} tok/s")
 
 
 def stream_chat(client, messages: list[dict]):
