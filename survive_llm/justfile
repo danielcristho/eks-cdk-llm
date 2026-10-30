@@ -80,3 +80,22 @@ argocd-ui:
 # initial admin password for the Argo CD UI
 argocd-password:
     @kubectl get secret -n argocd argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d; echo
+
+# AZ name -> AZ ID (zonal shift takes the ID) and which zone each node is in
+zones:
+    aws ec2 describe-availability-zones --query 'AvailabilityZones[].[ZoneName,ZoneId]' --output text
+    kubectl get nodes -L topology.kubernetes.io/zone,role,workload
+
+# shift the cluster's traffic away from an AZ ID: just zonal-shift-start use1-az1 30m
+zonal-shift-start az_id expires="30m":
+    aws arc-zonal-shift start-zonal-shift --away-from {{az_id}} --expires-in {{expires}} --comment "survive_llm test" \
+      --resource-identifier "$(aws eks describe-cluster --name $CLUSTER_NAME --query cluster.arn --output text)"
+
+# active shifts and per-AZ traffic weights for the cluster
+zonal-shift-status:
+    aws arc-zonal-shift get-managed-resource \
+      --resource-identifier "$(aws eks describe-cluster --name $CLUSTER_NAME --query cluster.arn --output text)"
+
+# end a shift early: just zonal-shift-cancel <zonal-shift-id>
+zonal-shift-cancel id:
+    aws arc-zonal-shift cancel-zonal-shift --zonal-shift-id {{id}}
