@@ -25,8 +25,8 @@ class EksStack(Stack):
 
         kubectl_layer = KubectlV34Layer(self, "KubectlLayer")
 
-        # single NAT gateway is fine for a demo cluster; AZ-redundant NAT isn't worth 2x the hourly charge here
-        self.vpc = ec2.Vpc(self, "EksVpc", max_azs=2, nat_gateways=1)
+        # one NAT per AZ: with a single NAT, losing its AZ cuts egress for the AZ we shift traffic to
+        self.vpc = ec2.Vpc(self, "EksVpc", max_azs=2, nat_gateways=2)
         self.vpc.add_gateway_endpoint("S3GatewayEndpoint", service=ec2.GatewayVpcEndpointAwsService.S3)
 
         cluster_name = os.environ.get("CLUSTER_NAME", "eks-llm-scale")
