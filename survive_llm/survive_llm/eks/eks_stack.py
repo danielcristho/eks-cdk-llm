@@ -42,6 +42,21 @@ class EksStack(Stack):
             kubectl_layer=kubectl_layer,
         )
 
+        # eks.Cluster creates the cluster through a custom resource with no zonal shift prop, so turn it on after
+        cr.AwsCustomResource(
+            self,
+            "ClusterZonalShift",
+            on_create=cr.AwsSdkCall(
+                service="EKS",
+                action="updateClusterConfig",
+                parameters={"name": self.cluster.cluster_name, "zonalShiftConfig": {"enabled": True}},
+                physical_resource_id=cr.PhysicalResourceId.of(f"{cluster_name}-zonal-shift"),
+            ),
+            policy=cr.AwsCustomResourcePolicy.from_statements([
+                iam.PolicyStatement(actions=["eks:UpdateClusterConfig"], resources=[self.cluster.cluster_arn]),
+            ]),
+        )
+
         self.cluster.add_nodegroup_capacity(
             "ManagedNodeGroup",
             desired_size=3,
