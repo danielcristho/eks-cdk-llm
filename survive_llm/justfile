@@ -44,6 +44,11 @@ kubeconfig:
 vllm-forward:
     kubectl port-forward -n kuberay svc/vllm-serve-svc 8000:8000
 
+# in-cluster Gradio chat UI at localhost:7860 (talks to vLLM through vllm-serve-svc)
+chat-ui:
+    kubectl rollout status -n kuberay deploy/chat-ui --timeout=300s
+    kubectl port-forward -n kuberay svc/chat-ui 7860:80
+
 # port-forward the KFP UI to localhost:8080
 kfp-ui:
     kubectl port-forward -n kubeflow svc/ml-pipeline-ui 8080:80

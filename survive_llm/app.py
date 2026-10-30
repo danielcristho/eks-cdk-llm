@@ -12,6 +12,7 @@ from survive_llm.ray.ray_stack import RayStack
 from survive_llm.vllm.vllm_stack import VllmStack
 from survive_llm.kubeflow.kubeflow_stack import KubeflowStack
 from survive_llm.argocd.argocd_stack import ArgocdStack
+from survive_llm.chat.chat_stack import ChatStack
 
 app = cdk.App()
 
@@ -82,5 +83,14 @@ argocd_stack = ArgocdStack(
     env=env,
 )
 argocd_stack.add_dependency(vllm_stack)
+
+chat_stack = ChatStack(
+    app,
+    "chat-stack",
+    cluster=eks_stack.cluster,
+    kuberay_operator=ray_stack.kuberay_operator,
+    env=env,
+)
+chat_stack.add_dependency(argocd_stack)
 
 app.synth()
