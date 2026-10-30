@@ -23,6 +23,9 @@ See also: [code_style.md](code_style.md), [commits.md](commits.md).
 - **`hypertuning_llm/`**: WIP. `pipeline_llm` + a Ray Tune step (ASHA, baseline
   trial) before fine-tuning, and a `deploy_model` step that rolls the new model
   out to the vLLM RayService. Local CPU smoke test in `tests/smoke_pipeline_local.py`.
+- **`survive_llm/`**: WIP. `hypertuning_llm` + ARC zonal shift: EKS zonal shift
+  enabled through an `AwsCustomResource`, one NAT per AZ, one warm vLLM replica
+  per AZ (`min_replicas: 2` + zone topology spread), `just zonal-shift-*` recipes.
 
 ## Commands (run inside the relevant project dir)
 
