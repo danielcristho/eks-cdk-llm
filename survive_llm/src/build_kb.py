@@ -2,6 +2,7 @@
 """
 import json
 import urllib.request
+from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
@@ -54,6 +55,16 @@ def main() -> None:
         room = s["room"] if s["room"] == s["track"] else f"{s['track']} ({s['room']})"
         row = f"- {hhmm(s['startsAt'])}-{hhmm(s['endsAt'])} | {room} | {s['title']}"
         lines.append(f"{row} | {names}" if names else row)
+
+    # list questions ("speakers from AWS?") need the model to scan every agenda row, which a 1.5B model
+    # gets wrong; grouping once here turns them into a single-line lookup
+    by_company = defaultdict(list)
+    for sid in dict.fromkeys(i for s in schedule for i in s["speakerIds"]):
+        if sid in speakers:
+            sp = speakers[sid]
+            by_company[sp["company"]].append(f"{sp['name']} ({sp['role']})")
+    lines += ["", "## Speakers by company"]
+    lines += [f"- {company}: {', '.join(names)}" for company, names in sorted(by_company.items())]
 
     OUT.write_text("\n".join(lines) + "\n")
     print(f"wrote {OUT} ({len(schedule)} sessions)")
