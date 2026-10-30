@@ -1,11 +1,22 @@
 # EKS CDK LLM
 
-A repository for exploring LLM Serving and MLOps practices on AWS Kubernetes (EKS) using Infrastructure as Code (AWS CDK).
+A repository for exploring LLM serving and MLOps on Amazon EKS, built with AWS CDK.
+
+**Serve → Scale → Fine-tune → Roll out → Tune → Survive**
 
 ## Projects
 
-| Project | Description | Blog Post |
-|---------|-------------|------|
-| **[Serving LLMs on EKS](./serves_llm/README.md)** | Creating EKS cluster and serving `Llama-3.1-8B-Instruct` (AWQ quantized) LLM | [LLM on EKS: Serving with vLLM](https://danielcristho.site/blog/llm-on-eks-vllm)|
-| **[Scaling LLMs on EKS](./scale_llm/README.md)** | Autoscaling `Llama-3.1-8B-Instruct` inference with Ray + KubeRay, GPU nodes provisioned on demand via Karpenter | [LLM on EKS: Scaling with Ray & Karpenter](https://danielcristho.site/blog/llm-on-eks-scale-llm)|
-| **[Training Pipelines on EKS](./pipeline_llm/README.md)** | LoRA fine-tuning and AWQ quantization of `Qwen2.5-1.5B-Instruct` as a repeatable Kubeflow Pipelines workflow, backed by Amazon RDS and S3 | [LLM on EKS: Training Pipelines with Kubeflow](https://danielcristho.site/blog/llm-on-eks-pipeline-kubeflow/)|
+| # | Project | What it does | Blog post |
+|---|---------|--------------|-----------|
+| 1 | **[Serving LLMs on EKS](./serves_llm/README.md)** | EKS cluster serving `Llama-3.1-8B-Instruct` (AWQ) with vLLM | [LLM on EKS: Serving with vLLM](https://danielcristho.site/blog/llm-on-eks-vllm) |
+| 2 | **[Scaling LLMs on EKS](./scale_llm/README.md)** | Autoscaling inference with Ray + KubeRay, GPU nodes on demand via Karpenter | [LLM on EKS: Scaling with Ray & Karpenter](https://danielcristho.site/blog/llm-on-eks-scale-llm) |
+| 3 | **[Training Pipelines on EKS](./pipeline_llm/README.md)** | LoRA fine-tuning and AWQ quantization of `Qwen2.5-1.5B-Instruct` with Kubeflow Pipelines, backed by RDS and S3 | [LLM on EKS: Training Pipelines with Kubeflow](https://danielcristho.site/blog/llm-on-eks-pipeline-kubeflow/) |
+| 4 | **[Rolling Out Models](./hypertuning_llm/README-rollout.md)** | Serving the pipeline's model from S3, switching models with a Git commit through Argo CD | coming soon |
+| 5 | **[Hyperparameter Tuning](./hypertuning_llm/README.md)** | Ray Tune searches LoRA settings, and a new model ships when it beats the old one | coming soon |
+| 6 | **Surviving an AZ outage** | Zonal shift with Amazon ARC | coming soon |
+
+**Stack:** AWS CDK, Amazon EKS, vLLM, Ray, Karpenter, Kubeflow Pipelines, Argo CD
+
+## Before you deploy
+
+Each project creates real AWS resources, including GPU instances and a NAT gateway. Every folder has a `justfile`: `just deploy` to bring it up, `just destroy` when you're done.
