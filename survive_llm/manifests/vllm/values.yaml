@@ -1,5 +1,5 @@
 # Served model (S3 prefix). Changing it here is the rollout; git revert rolls back.
-modelPrefix: pipeline-output/model-v2-demo
+modelPrefix: pipeline-output/model-v3-demo
 
 # Set by CDK from .env, keeps the bucket name out of this public repo
 modelBucket: ""
