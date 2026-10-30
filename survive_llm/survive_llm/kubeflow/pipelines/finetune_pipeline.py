@@ -1,6 +1,6 @@
 """
 Compiles to finetune_pipeline.yaml.
-Data-prep -> Ray Tune LoRA search -> LoRA fine-tune (best config) -> AWQ quantize -> S3 -> roll out to vLLM.
+Data-prep -> Ray Tune LoRA search -> LoRA fine-tune (best config) -> AWQ quantize -> S3.
 """
 
 from typing import NamedTuple
@@ -316,25 +316,6 @@ def quantize_and_upload(model_in: dsl.Input[dsl.Model], bucket_name: str, s3_pre
     return f"s3://{bucket_name}/{prefix}"
 
 
-@dsl.component(base_image="python:3.11-slim", packages_to_install=["kubernetes==31.0.0"])
-def deploy_model(model_uri: str):
-    """Point the vllm RayService at model_uri. Since MODEL_URI sits in rayClusterConfig, KubeRay brings up a
-    new cluster with the new model and moves traffic over only once it is serving (zero-downtime upgrade)."""
-    from kubernetes import client, config
-
-    config.load_incluster_config()
-    api = client.CustomObjectsApi()
-    svc = api.get_namespaced_custom_object("ray.io", "v1", "kuberay", "rayservices", "vllm")
-    for group in svc["spec"]["rayClusterConfig"]["workerGroupSpecs"]:
-        pod = group["template"]["spec"]
-        for container in pod.get("initContainers", []) + pod["containers"]:
-            for env in container.get("env", []):
-                if env["name"] == "MODEL_URI":
-                    env["value"] = model_uri
-    api.replace_namespaced_custom_object("ray.io", "v1", "kuberay", "rayservices", "vllm", svc)
-    print(f"vllm RayService now points at {model_uri}")
-
-
 def _on_gpu_node(task: dsl.PipelineTask) -> dsl.PipelineTask:
     """karpenter's gpu NodePool: labels workload=gpu, taints nvidia.com/gpu=true:NoSchedule."""
     task.set_accelerator_type("nvidia.com/gpu").set_accelerator_limit(1)
@@ -345,7 +326,7 @@ def _on_gpu_node(task: dsl.PipelineTask) -> dsl.PipelineTask:
 
 @dsl.pipeline(
     name="qwen-lora-tune-finetune",
-    description="Prep data -> Ray Tune LoRA search -> if it beats the baseline: LoRA fine-tune -> AWQ quantize -> S3 -> roll out to vLLM",
+    description="Prep data -> Ray Tune LoRA search -> if it beats the baseline: LoRA fine-tune -> AWQ quantize -> S3",
 )
 def finetune_pipeline(
     bucket_name: str,
@@ -378,8 +359,7 @@ def finetune_pipeline(
             run_id=dsl.PIPELINE_JOB_ID_PLACEHOLDER,
         )
         _on_gpu_node(quant)
-
-        deploy_model(model_uri=quant.output)
+        # rollout is a Git commit: set modelPrefix in manifests/vllm/values.yaml to pipeline-output/<run-id>
 
 
 if __name__ == "__main__":

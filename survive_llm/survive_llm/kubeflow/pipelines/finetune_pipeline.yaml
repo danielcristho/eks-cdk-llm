@@ -1,6 +1,6 @@
 # PIPELINE DEFINITION
 # Name: qwen-lora-tune-finetune
-# Description: Prep data -> Ray Tune LoRA search -> if it beats the baseline: LoRA fine-tune -> AWQ quantize -> S3 -> roll out to vLLM
+# Description: Prep data -> Ray Tune LoRA search -> if it beats the baseline: LoRA fine-tune -> AWQ quantize -> S3
 # Inputs:
 #    base_model: str [Default: 'Qwen/Qwen2.5-1.5B-Instruct']
 #    bucket_name: str
@@ -12,21 +12,6 @@ components:
   comp-condition-1:
     dag:
       tasks:
-        deploy-model:
-          cachingOptions:
-            enableCache: true
-          componentRef:
-            name: comp-deploy-model
-          dependentTasks:
-          - quantize-and-upload
-          inputs:
-            parameters:
-              model_uri:
-                taskOutputParameter:
-                  outputParameterKey: Output
-                  producerTask: quantize-and-upload
-          taskInfo:
-            name: deploy-model
         finetune-lora:
           cachingOptions:
             enableCache: true
@@ -97,12 +82,6 @@ components:
           parameterType: NUMBER_INTEGER
         pipelinechannel--tune_max_epochs:
           parameterType: NUMBER_INTEGER
-  comp-deploy-model:
-    executorLabel: exec-deploy-model
-    inputDefinitions:
-      parameters:
-        model_uri:
-          parameterType: STRING
   comp-finetune-lora:
     executorLabel: exec-finetune-lora
     inputDefinitions:
@@ -213,48 +192,6 @@ components:
           parameterType: NUMBER_INTEGER
 deploymentSpec:
   executors:
-    exec-deploy-model:
-      container:
-        args:
-        - --executor_input
-        - '{{$}}'
-        - --function_to_execute
-        - deploy_model
-        command:
-        - sh
-        - -c
-        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
-          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
-          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.13.0'\
-          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"'  &&\
-          \  python3 -m pip install --quiet --no-warn-script-location 'kubernetes==31.0.0'\
-          \ && \"$0\" \"$@\"\n"
-        - sh
-        - -ec
-        - 'program_path=$(mktemp -d)
-
-
-          printf "%s" "$0" > "$program_path/ephemeral_component.py"
-
-          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
-
-          '
-        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
-          \ *\n\ndef deploy_model(model_uri: str):\n    \"\"\"Point the vllm RayService\
-          \ at model_uri. Since MODEL_URI sits in rayClusterConfig, KubeRay brings\
-          \ up a\n    new cluster with the new model and moves traffic over only once\
-          \ it is serving (zero-downtime upgrade).\"\"\"\n    from kubernetes import\
-          \ client, config\n\n    config.load_incluster_config()\n    api = client.CustomObjectsApi()\n\
-          \    svc = api.get_namespaced_custom_object(\"ray.io\", \"v1\", \"kuberay\"\
-          , \"rayservices\", \"vllm\")\n    for group in svc[\"spec\"][\"rayClusterConfig\"\
-          ][\"workerGroupSpecs\"]:\n        pod = group[\"template\"][\"spec\"]\n\
-          \        for container in pod.get(\"initContainers\", []) + pod[\"containers\"\
-          ]:\n            for env in container.get(\"env\", []):\n               \
-          \ if env[\"name\"] == \"MODEL_URI\":\n                    env[\"value\"\
-          ] = model_uri\n    api.replace_namespaced_custom_object(\"ray.io\", \"v1\"\
-          , \"kuberay\", \"rayservices\", \"vllm\", svc)\n    print(f\"vllm RayService\
-          \ now points at {model_uri}\")\n\n"
-        image: python:3.11-slim
     exec-finetune-lora:
       container:
         args:
@@ -559,7 +496,7 @@ deploymentSpec:
             type: nvidia.com/gpu
 pipelineInfo:
   description: 'Prep data -> Ray Tune LoRA search -> if it beats the baseline: LoRA
-    fine-tune -> AWQ quantize -> S3 -> roll out to vLLM'
+    fine-tune -> AWQ quantize -> S3'
   name: qwen-lora-tune-finetune
 root:
   dag:
