@@ -28,6 +28,8 @@ def stream_chat(client, messages: list[dict]):
         messages=messages,
         stream=True,
         stream_options={"include_usage": True},
+        # low, so the same question gets the same answer; sampling flipped list questions to "not listed"
+        temperature=0.2,
     )
     for chunk in stream:
         if chunk.choices:
