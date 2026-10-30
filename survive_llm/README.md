@@ -14,6 +14,7 @@ So in this post, we'll test Amazon Application Recovery Controller (ARC) zonal s
 - **One NAT Gateway per AZ.** With one NAT, losing its AZ cuts egress (S3 sync, pip installs) for the AZ we shift traffic to.
 - **One warm vLLM replica per AZ.** `min_replicas: 2` plus a zone `topologySpreadConstraint` on the GPU workers, so the healthy AZ already serves when the shift starts.
 - **`just` recipes** to start, inspect and cancel a zonal shift.
+- **The chat UI runs in the cluster.** `chat-stack` deploys the Gradio app (`src/chat_gradio`) from a ConfigMap, and it calls vLLM through `vllm-serve-svc`. Through `kubectl port-forward` to vLLM, a laptop would pin one pod and skip the Service that zonal shift steers. Open it with `just chat-ui`.
 
 <!-- TODO: architecture diagram, 2 AZs -->
 
