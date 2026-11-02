@@ -53,3 +53,5 @@ Zonal shift recipes: `just zones`, `just zonal-shift-start <az-id> 30m`, `just z
 Each project creates real AWS resources, including GPU instances and a NAT gateway. Every folder has a `justfile`: `just deploy` to bring it up, `just destroy` when you're done.
 
 The projects share stack names (`eks-stack`, `vllm-stack`, ...), so deploy one project at a time per account and region, and destroy it before deploying the next.
+
+This project was presented @ AWS Community Day Jakarta 2026
