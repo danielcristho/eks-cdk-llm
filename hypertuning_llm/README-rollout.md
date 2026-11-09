@@ -11,7 +11,7 @@ On top of that, we put a small chatbot: an assistant for AWS Community Day Jakar
 - Each GPU worker pulls the model from S3 in an init container before vLLM starts. 1.6 GB synced in about 6 seconds through the S3 Gateway Endpoint.
 - vLLM serves it under a stable name, `qwen-lora`, so clients don't change when the model behind it does.
 - Model versions are write-once S3 prefixes (`pipeline-output/model-v1`, `pipeline-output/<run-id>`). `modelPrefix` in `manifests/vllm/values.yaml` picks which one gets served.
-- Switching models is a Git commit. Argo CD checks Git every 30 seconds and syncs it, KubeRay builds a new RayCluster with the new model, and traffic moves once it serves. The whole switch takes 10 to 15 minutes. Rolling back is `git revert`.
+- Switching models is a Git commit. Argo CD synced ours 25 seconds after the commit, KubeRay builds a new RayCluster with the new model, and traffic moves once it serves. The whole switch takes 10 to 15 minutes. Rolling back is `git revert`.
 - A switch needs room for two clusters for a few minutes: twice the GPUs, plus a second Ray head on the system nodes.
 - vLLM is reachable from inside the cluster, no public load balancer in front of the GPU.
 - A new GPU replica takes about 8 minutes from request to serving, and Karpenter accounts for less than one of them.
@@ -125,13 +125,16 @@ Switching from `model-v2-demo` to `model-v3-demo`:
 | Stage | Time (UTC) | Since commit |
 |---|---|---|
 | Commit | 18:37:56 | |
-| Argo CD synced, new Ray head running | by 18:40:43 | < 3 min |
+| Argo CD synced | 18:38:21 | 25s |
+| New Ray head running | by 18:40:43 | < 3 min |
 | New GPU workers created (`model-v3-demo`) | 18:42:51 | ~5 min |
 | New workers running | 18:46:23 | ~8.5 min |
 
 During all of it, both `model-v2-demo` workers stayed ready and served. vLLM on the new workers needs about 4 more minutes to load before traffic moves (see the replica timeline below), so count on 10 to 15 minutes per switch.
 
-▶️ Recording from the talk: [Argo CD syncing the commit](https://drive.google.com/file/d/1nzQcj4hoKMP8klRVHgySGuKIi8x2vNUb/view) and [each worker pulling the new model](https://drive.google.com/file/d/1THQcf55sILOe3ObValfCwp-ln1P5eZs5/view).
+![Argo CD synced to the model-v3 commit, with the new RayCluster next to the old one.](./assets/gitops-argocd.png)
+
+![Two workers on model-v3-demo and two on model-v2-demo, each pulling its own model from S3.](./assets/gitops-workers.png)
 
 To check which model each worker has, read `MODEL_URI` from the pods and the sync log of the init container:
 
@@ -185,7 +188,7 @@ Ray Serve asks for another replica when a replica averages more than 2 requests 
 
 With 10 users: median latency 2.1s, p95 3.9s, about 142 completion tokens per answer, and both T4s at 86 to 88% utilization. At 12 users Ray asked for a third replica, Karpenter added a GPU node, and the third replica served 7m37s later. Throughput went up by half.
 
-▶️ Recording from the talk: [Locust while the third replica comes in](https://drive.google.com/file/d/1vO_Jo_yEAz_s7IZ4_06f_dyax2oNF-yH/view).
+![Locust with 12 users: RPS steps up and p95 drops once the third replica serves, with no failures.](./assets/locust-scale-out.png)
 
 One thing that tripped us up: we raised `VLLM_MAX_REPLICAS` from 2 to 3 on a running cluster, and nothing scaled. KubeRay updated the RayService but not the `maxReplicas` of the RayCluster that was running, and unlike a model change, it doesn't build a new cluster for it. We patched the RayCluster by hand:
 
