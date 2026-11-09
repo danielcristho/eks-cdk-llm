@@ -13,12 +13,12 @@ Each folder is its own CDK app and its own blog post. Each one starts as a copy 
 
 | # | Project | What it does | Blog post |
 |---|---------|--------------|-----------|
-| 1 | **[Serving LLMs on EKS](./serves_llm/README.md)** | EKS cluster serving `Llama-3.1-8B-Instruct` (AWQ) with vLLM | [LLM on EKS: Serving with vLLM](https://danielcristho.site/blog/llm-on-eks-vllm) |
-| 2 | **[Scaling LLMs on EKS](./scale_llm/README.md)** | Autoscaling inference with Ray + KubeRay, GPU nodes on demand via Karpenter | [LLM on EKS: Scaling with Ray & Karpenter](https://danielcristho.site/blog/llm-on-eks-scale-llm) |
-| 3 | **[Training Pipelines on EKS](./pipeline_llm/README.md)** | LoRA fine-tuning and AWQ quantization of `Qwen2.5-1.5B-Instruct` with Kubeflow Pipelines, backed by RDS and S3 | [LLM on EKS: Training Pipelines with Kubeflow](https://danielcristho.site/blog/llm-on-eks-pipeline-kubeflow/) |
-| 4 | **[Rolling Out Models](./hypertuning_llm/README-rollout.md)** | Serving the pipeline's model from S3, switching models with a Git commit through Argo CD | [LLM on EKS: Switching Models with Argo CD](https://danielcristho.site/blog/llm-on-eks-gitops/) |
-| 5 | **[Hyperparameter Tuning](./hypertuning_llm/README.md)** | Ray Tune searches LoRA settings, and a new model ships when it beats the old one | [LLM on EKS: Hyperparameter Tuning with Ray Tune](https://danielcristho.site/blog/llm-on-eks-hyperparametertuning/) |
-| 6 | **[Making LLMs Reliable on EKS](./survive_llm/README.md)** | Surviving an AZ outage with zonal shift (Amazon ARC): a warm vLLM replica per AZ, one NAT gateway per AZ, and the Gradio chat UI running in the cluster | Coming soon, draft [in the repo](./survive_llm/README.md) |
+| 1 | **[Serving LLMs on EKS](./serves_llm/)** | EKS cluster serving `Llama-3.1-8B-Instruct` (AWQ) with vLLM | [LLM on EKS: Serving with vLLM](https://danielcristho.site/blog/llm-on-eks-vllm) |
+| 2 | **[Scaling LLMs on EKS](./scale_llm/)** | Autoscaling inference with Ray + KubeRay, GPU nodes on demand via Karpenter | [LLM on EKS: Scaling with Ray & Karpenter](https://danielcristho.site/blog/llm-on-eks-scale-llm) |
+| 3 | **[Training Pipelines on EKS](./pipeline_llm/)** | LoRA fine-tuning and AWQ quantization of `Qwen2.5-1.5B-Instruct` with Kubeflow Pipelines, backed by RDS and S3 | [LLM on EKS: Training Pipelines with Kubeflow](https://danielcristho.site/blog/llm-on-eks-pipeline-kubeflow/) |
+| 4 | **[Rolling Out Models](./hypertuning_llm/)** | Serving the pipeline's model from S3, switching models with a Git commit through Argo CD | [LLM on EKS: Switching Models with Argo CD](https://danielcristho.site/blog/llm-on-eks-gitops/) |
+| 5 | **[Hyperparameter Tuning](./hypertuning_llm/)** | Ray Tune searches LoRA settings, and a new model ships when it beats the old one | [LLM on EKS: Hyperparameter Tuning with Ray Tune](https://danielcristho.site/blog/llm-on-eks-hyperparametertuning/) |
+| 6 | **[Making LLMs Reliable on EKS](./survive_llm/)** | Surviving an AZ outage with zonal shift (Amazon ARC): a warm vLLM replica per AZ, one NAT gateway per AZ, and the Gradio chat UI running in the cluster | Coming soon, draft [in the repo](./survive_llm/README.md) |
 
 **Stack:** AWS CDK, Amazon EKS, vLLM, Ray, Karpenter, Kubeflow Pipelines, Argo CD, Amazon Application Recovery Controller (ARC), Gradio
 
