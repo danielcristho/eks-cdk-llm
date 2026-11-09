@@ -4,7 +4,7 @@ Hi there! 👋🏽 Quick recap before we start. In the [Kubeflow pipeline post](
 
 The chatbot from the previous post is an assistant for AWS Community Day Jakarta 2026, where this series is turning into a talk. It answers questions about the agenda, rooms and speakers from a small knowledge base built from the event page.
 
-But one thing bugged me: the LoRA settings behind model A were a guess. So in this post, we'll measure them. The pipeline searches for better settings with Ray Tune, and when one of them wins, the new model (model B) gets rolled out. The full architecture is in the [previous post](./README-rollout.md#architecture).
+But one thing bugged me: the LoRA settings behind model A were a guess. So in this post, we'll set up a way to measure them. The pipeline searches for better settings with Ray Tune, and when one of them wins, the new model (model B) gets rolled out. The full architecture is in the [previous post](./README-rollout.md#architecture).
 
 ## TL;DR
 
@@ -14,6 +14,7 @@ But one thing bugged me: the LoRA settings behind model A were a guess. So in th
 - The hand-picked settings from the pipeline post run as one of the trials (the baseline), so we can see where that guess ranks.
 - If the best config doesn't beat the baseline, the pipeline stops and the served model stays as it is.
 - Each run writes its model to its own S3 prefix. Rolling it out is the same Git commit as in the previous post.
+- The pipeline hasn't run yet. What we measured so far: model A scores 6/15 with the whole knowledge base in the prompt, and 11/15 when the prompt gets the matching lines instead.
 
 ## Why Tune at All?
 
@@ -130,22 +131,45 @@ git push
 
 Argo CD syncs it, KubeRay builds a new cluster with model B, and model A serves until B is ready.
 
-## Results
+## What We Know So Far
 
-<!-- TODO: test accuracy for base vs old-settings LoRA vs tuned LoRA, a few answers side by side (e.g. the parking question) -->
+I haven't run this pipeline yet, so there's no trials table and no model B in this post. What we do have is the baseline the run has to beat: model A with the knowledge base, measured on the AWS Community Day cluster with `tests/eval_kb.py` (`just eval`):
 
-## Chatting with the Model
+| Setup | Score |
+|---|---|
+| Model A, whole knowledge base in the prompt | 6/15 |
+| Model A, keyword retrieval (the prompt gets the matching lines) | 11/15 |
 
-<!-- TODO: the chatbot setup is in README-rollout.md; here, the same questions against the tuned model -->
+The misses aren't random. Questions about one line work: where and when the event is, which room a talk is in when you give its full title. Questions where the model has to scan many lines fail: "who speaks from AWS?", "what's on the Main Stage after lunch?". A section that groups speakers by company turned the first one into a one-line lookup, and the model got it right 3 times out of 3.
+
+That changes my guess from the start of this post. The biggest gap so far is how much context the 1.5B model gets, not its weights. Sending fewer, better lines (retrieval) gained more than any LoRA setting is likely to.
+
+## What's Next
+
+The pipeline in this post is ready to run, but it needs two changes first (see [What Fine-Tuning Could Teach](#what-fine-tuning-could-teach)):
+
+1. A dataset built from the knowledge base, in place of `guanaco-llama2-1k`.
+2. Loss masking, so training counts the answer and not the prompt.
+
+Then one run answers three questions with the same test set: does LoRA beat base Qwen with the knowledge base, does tuning beat the old settings, and does either one beat retrieval. I'll add the results here once that run happens.
 
 ## Deploy
 
-<!-- TODO -->
+```bash
+cd hypertuning_llm
+cp .env.example .env    # account, region, admin user, bucket, GITOPS_REPO_URL, GITOPS_REVISION
+just deploy             # refuses to run with uncommitted changes in the folder
+just kubeconfig
+just compile            # writes hypertuning_llm/kubeflow/pipelines/finetune_pipeline.yaml
+just kfp-ui             # KFP at localhost:8080
+```
 
-## Running the Pipeline
+In the KFP UI, upload `finetune_pipeline.yaml` and start a run with `bucket_name` set to your bucket. `num_trials` (6) and `tune_max_epochs` (3) control how much GPU time the search gets. The trials table shows up as the `trials_report` artifact of the `tune-hyperparams` step.
 
-<!-- TODO: trials table from the KFP UI, best config vs baseline, rollout logs -->
+For the chatbot and the rollout, follow the [previous post](./README-rollout.md#deploy), and clean up the same way.
 
 ## Conclusion
 
-<!-- TODO -->
+Ray Tune fits into the pipeline as one more step, without touching the RayCluster that serves users. It runs in the training pod, ASHA cuts the weak trials after one epoch, and the old settings compete as one of the trials. When they win, the pipeline skips the training and keeps model A.
+
+The bigger lesson came before any tuning: measure the thing you want to improve. For our event chatbot, the numbers so far point at the prompt, not the weights. Tuning is ready for the day a dataset says the weights matter.
