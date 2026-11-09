@@ -8,3 +8,6 @@ __pycache__
 # CDK asset staging directory
 .cdk.staging
 cdk.out
+
+# Gradio feedback (like/dislike) and caches
+.gradio
