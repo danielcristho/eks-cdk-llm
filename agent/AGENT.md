@@ -20,9 +20,11 @@ See also: [code_style.md](code_style.md), [commits.md](commits.md).
   (standalone Kubeflow Pipelines backed by RDS + S3). The pipeline in
   `kubeflow/pipelines/finetune_pipeline.py` LoRA fine-tunes and AWQ-quantizes
   `Qwen2.5-1.5B-Instruct` and pushes it to S3.
-- **`hypertuning_llm/`**: WIP. `pipeline_llm` + a Ray Tune step (ASHA, baseline
-  trial) before fine-tuning, and a `deploy_model` step that rolls the new model
-  out to the vLLM RayService. Local CPU smoke test in `tests/smoke_pipeline_local.py`.
+- **`hypertuning_llm/`**: `pipeline_llm` + a Ray Tune step (ASHA, baseline
+  trial) before fine-tuning. vLLM serves the model from S3, and the RayService is
+  a Helm chart in `manifests/vllm/` synced by Argo CD (`argocd/argocd_stack.py`):
+  rolling out a model is a commit to `modelPrefix` in `manifests/vllm/values.yaml`.
+  Local CPU smoke test in `tests/smoke_pipeline_local.py`.
 - **`survive_llm/`**: WIP. `hypertuning_llm` + ARC zonal shift: EKS zonal shift
   enabled through an `AwsCustomResource`, one NAT per AZ, one warm vLLM replica
   per AZ (`min_replicas: 2` + zone topology spread), `just zonal-shift-*` recipes,
@@ -55,10 +57,23 @@ python <project>/kubeflow/pipelines/finetune_pipeline.py   # writes finetune_pip
 - `cdk.out/`, `.venv/`, `__pycache__/` are generated: don't edit or commit into them.
 - The user runs `cdk deploy` / `cdk destroy`; agents don't deploy.
 
+## Public writing
+
+READMEs, blog drafts, code comments and commit messages are public. Write them for
+a reader who has the repo and nothing else:
+
+- No private context: `.brainstorm/` notes, chat or session history, plans with
+  the teammate, deadlines, budget, "as we discussed", "for the demo/recording".
+- No internal names or identities: the bucket name, account ID, emails, IAM users.
+- No results that weren't measured. Say what ran, where, and when; if something
+  hasn't run, say so instead of guessing numbers.
+- Explain why in terms the reader can check in the repo, not in terms of what
+  happened in our sessions.
+
 ## Gotchas
 
 - New AWS accounts default to 0 vCPU quota for G/VT on-demand instances: request an increase before deploying GPU node groups.
 - `tests/unit/test_<project>_stack.py` in every project is unmodified `cdk init` boilerplate (imports a stack module that doesn't exist): don't trust it as a working example, and don't wire CI to it as-is.
-- `pipeline_llm/` and `hypertuning_llm/` have no `.env.example`; copy `scale_llm/.env.example` and change the bucket and cluster names.
+- `pipeline_llm/` has no `.env.example`; copy `scale_llm/.env.example` and change the bucket and cluster names.
 - `hypertuning_llm` pins `aws-cdk-lib==2.261.0`: newer releases emit cloud assembly schema 55, which CDK CLI 2.1132 can't read.
 - If `cdk synth` fails writing the jsii cache, run it with `JSII_RUNTIME_PACKAGE_CACHE=disabled`.
