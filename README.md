@@ -1,9 +1,9 @@
+> [!NOTE]
+> This project was presented @ AWS Community Day Jakarta 2026.
+
 # EKS CDK LLM
 
 A repository for exploring LLM serving and MLOps on Amazon EKS, built with AWS CDK.
-
-> [!NOTE]
-> This project was presented @ AWS Community Day Jakarta 2026.
 
 ![The Final Architecture](https://res.cloudinary.com/diunivf9n/image/upload/v1793366609/Archi-Page-3.drawio_lgyv3h.png)
 
