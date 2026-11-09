@@ -1,20 +1,23 @@
 # LLM on EKS: Hyperparameter Tuning with Ray Tune
 
-Hi there! 👋🏽 In the previous post, vLLM started serving our fine-tuned `Qwen2.5-1.5B-Instruct` from S3, and we can switch model versions with a blue/green rollout (see [README-rollout.md](./README-rollout.md)). But one thing bugged me: the LoRA settings behind that model were a guess.
+Hi there! 👋🏽 Quick recap before we start. In the [Kubeflow pipeline post](../pipeline_llm/README.md), we fine-tuned `Qwen2.5-1.5B-Instruct` with LoRA, quantized it with AWQ, and pushed it to S3. In the [previous post](./README-rollout.md), vLLM started serving that model from S3 as `qwen-lora`, and switching to a new model became a Git commit that Argo CD rolls out with no downtime. Let's call the model that's serving now model A.
 
-So in this post, we'll measure them. The pipeline searches for better settings with Ray Tune, and it rolls out a new model when one of them wins.
+The chatbot from the previous post is an assistant for AWS Community Day Jakarta 2026, where this series is turning into a talk. It answers questions about the agenda, rooms and speakers from a small knowledge base built from the event page.
+
+But one thing bugged me: the LoRA settings behind model A were a guess. So in this post, we'll measure them. The pipeline searches for better settings with Ray Tune, and when one of them wins, the new model (model B) gets rolled out. The full architecture is in the [previous post](./README-rollout.md#architecture).
 
 ## TL;DR
 
+- Before tuning anything, we check if the event chatbot needs fine-tuning at all.
 - A new `tune_hyperparams` step runs Ray Tune inside a single GPU pod, searching LoRA `r`, `lora_alpha`, and `learning_rate` on a held-out eval split.
 - ASHA stops weak trials after one epoch, so 6 trials cost a lot less than 6 full trainings.
-- The previous post's hand-picked settings run as one of the trials (the baseline), so we can see where that guess ranks.
+- The hand-picked settings from the pipeline post run as one of the trials (the baseline), so we can see where that guess ranks.
 - If the best config doesn't beat the baseline, the pipeline stops and the served model stays as it is.
-- Each run writes its model to its own S3 prefix, and a final `deploy_model` step rolls it out with the blue/green mechanism from the previous post.
+- Each run writes its model to its own S3 prefix. Rolling it out is the same Git commit as in the previous post.
 
 ## Why Tune at All?
 
-In the previous post, I picked the LoRA settings (`r=16`, `alpha=32`, `lr=5e-5`) because they're common defaults, not because I measured them. The pipeline trained on all 200 examples with no held-out set. The one signal we had was training loss, and it was going down when the epoch ended. That tells us the model was learning, not that these settings were good. And `5e-5` is on the low side for LoRA, most setups use something between `1e-4` and `2e-4`.
+In the pipeline post, I picked the LoRA settings (`r=16`, `alpha=32`, `lr=5e-5`) because they're common defaults, not because I measured them. The pipeline trained on all 200 examples with no held-out set. The one signal we had was training loss, and it was going down when the epoch ended. That tells us the model was learning, not that these settings were good. And `5e-5` is on the low side for LoRA, most setups use something between `1e-4` and `2e-4`.
 
 So the problem isn't that the first model is bad. We didn't measure it. In this post we hold out 20% of the data, try several LoRA configs under the same conditions, and keep the one with the lowest eval loss. The old defaults run as one of the trials. If they win, that's a real answer too: we'd know they're good instead of guessing.
 
@@ -22,7 +25,7 @@ So the problem isn't that the first model is bad. We didn't measure it. In this 
 
 Tuning answers "which LoRA config is best?". But there's a question before that: "does LoRA beat the base model at all?". If it doesn't, we're tuning something we don't need.
 
-For the AWS Community Day Jakarta chatbot, my guess is no. People ask about facts: times, rooms, speakers. Facts go in the prompt, not in the weights. The whole event knowledge base (`src/knowledge_base.md`, generated from the event API by `src/build_kb.py`) is around 1.5k tokens. That fits in `max_model_len` 4096, so `Qwen2.5-1.5B-Instruct` can read it from the system prompt without a retrieval index. Fine-tuning changes how the model answers, not what it knows. And an agenda baked into the weights goes stale once the schedule changes.
+For our event chatbot, my guess is no. People ask about facts: times, rooms, speakers. Facts go in the prompt, not in the weights. The whole event knowledge base (`src/knowledge_base.md`, generated from the event API by `src/build_kb.py`) is around 2k tokens. That fits in `max_model_len` 4096, so `Qwen2.5-1.5B-Instruct` can read it from the system prompt without a retrieval index. Fine-tuning changes how the model answers, not what it knows. And an agenda baked into the weights goes stale once the schedule changes.
 
 Eval loss isn't chatbot quality either. A lower loss doesn't mean the model gets "what time is the LLM talk?" right.
 
@@ -33,7 +36,7 @@ The knowledge base goes into every request, so training has to look the same: co
 **Dataset, generated from `src/knowledge_base.md` with templates (no LLM in the loop):**
 
 - Each session gives a few questions, in Indonesian and English: when is X, which room is X in, who presents X.
-- Each example's context is a mini knowledge base: the line with the answer plus ~8 random lines around it. That keeps examples around 300 tokens instead of 1.5k, which matters on a T4.
+- Each example's context is a mini knowledge base: the line with the answer plus ~8 random lines around it. That keeps examples around 300 tokens instead of 2k, which matters on a T4.
 - Unanswerable examples: the same question with the answer line removed from the context, and the target reply is "not in the event info, check jakarta.awscommunity.id/comday". Plus questions the event page doesn't cover (parking, wifi, dress code).
 - Split by session, not by row. Sessions in the test set don't show up in training, so the test score measures lookup, not memory.
 
@@ -61,23 +64,71 @@ My guess: the base model can handle simple lookups like "what time is X?". If th
 
 ## What Changed in the Pipeline
 
-```
-prepare_dataset -> tune_hyperparams -> [beats baseline?] -> finetune_lora -> quantize_and_upload -> deploy_model
-```
+The pipeline grabs 200 examples, then Ray Tune tries 6 LoRA configs, and one of them is the old config from the pipeline post. The best config has to beat that old one. If it doesn't, the pipeline stops and model A stays. If it does, we train with the winner, shrink it with AWQ, push it to S3, and serve it with vLLM. The diagram shows the trials side by side, but on our single T4 they run one at a time.
 
-<!-- TODO: architecture diagram -->
+![The pipeline, with Ray Tune and a baseline gate.](./assets/kfp-pipeline.png)
+
+> Click the image to zoom in.
 
 ### Ray Tune in One Pod
 
-<!-- TODO: why local mode on one GPU pod instead of the serving RayCluster, search space, ASHA, max_concurrent_trials=1, reuse_actors=False -->
+We have a RayCluster in the cluster, but it's busy serving vLLM. Its GPU workers hold the model, and taking one away for training means one replica less for users. So `tune_hyperparams` starts its own Ray inside the pipeline pod, on the one T4 that pod gets:
+
+```python
+ray.init(num_gpus=1 if use_gpu else 0, include_dashboard=False)
+```
+
+When the step ends, Ray goes away with the pod. No second RayCluster to run or pay for.
+
+The search space covers three settings:
+
+```python
+param_space={
+    "lora_r": tune.choice([8, 16, 32]),
+    "lora_alpha": tune.choice([16, 32, 64]),
+    "learning_rate": tune.loguniform(5e-5, 5e-4),
+},
+```
+
+Each trial is a short LoRA training on 80% of the data, evaluated on the other 20% at the end of every epoch. It reports `eval_loss` to Ray Tune after each epoch, and that's what ASHA works with. ASHA (`grace_period=1`, `reduction_factor=2`) compares trials after the first epoch and stops the weak ones, so they don't burn GPU time on epochs 2 and 3. A config that keeps winning runs up to `max_t`, 3 epochs.
+
+Two settings are there because of the single T4:
+
+- `max_concurrent_trials=1`: one GPU, one trial at a time.
+- `reuse_actors=False`: every trial gets a fresh worker process, so the GPU memory of the last trial is freed when it ends. We hit memory left behind in one process before, when merging Llama in the pipeline post.
 
 ### The Baseline Gate
 
-<!-- TODO: points_to_evaluate, dsl.If on beats_baseline, why skipping saves GPU time -->
+The old settings (`r=16`, `alpha=32`, `lr=5e-5`) go in as the first trial:
+
+```python
+search_alg=BasicVariantGenerator(points_to_evaluate=[baseline]),
+```
+
+So the baseline runs under the same conditions as the others, and the trials table shows where it ranks. The step returns the best config plus `beats_baseline`, which is false when the baseline itself has the lowest eval loss.
+
+The pipeline uses that flag to decide whether to train at all:
+
+```python
+with dsl.If(search.outputs["beats_baseline"] == True):
+    train = finetune_lora(..., lora_r=search.outputs["lora_r"], ...)
+    quant = quantize_and_upload(model_in=train.outputs["model_out"], ...)
+```
+
+If the baseline wins, model A was trained with the best config we found, and training it again changes nothing. The pipeline skips the full training and AWQ, which are the two longest GPU steps, and model A stays.
 
 ## Rolling Out the Winner
 
-<!-- TODO: deploy_model points the RayService at pipeline-output/<run-id>; the rollout itself is covered in README-rollout.md. With Argo CD, deploy_model's kubectl patch gets reverted by selfHeal; the pipeline should commit modelPrefix in manifests/vllm/values.yaml instead -->
+When a config wins, `quantize_and_upload` writes model B to `pipeline-output/<run-id>`. The pipeline stops there, it has no access to the cluster. Rolling out model B is the commit from the [previous post](./README-rollout.md#rolling-out-model-b):
+
+```bash
+sed -i 's|^modelPrefix:.*|modelPrefix: pipeline-output/<run-id>|' manifests/vllm/values.yaml
+git add manifests/vllm/values.yaml
+git commit -m "feat(new model): serve <run-id>"
+git push
+```
+
+Argo CD syncs it, KubeRay builds a new cluster with model B, and model A serves until B is ready.
 
 ## Results
 
