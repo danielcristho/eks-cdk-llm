@@ -56,19 +56,7 @@ python <project>/kubeflow/pipelines/finetune_pipeline.py   # writes finetune_pip
 - Config comes from `.env` (loaded via `python-dotenv` in `app.py`), never hardcode account/region/bucket names.
 - `cdk.out/`, `.venv/`, `__pycache__/` are generated: don't edit or commit into them.
 - The user runs `cdk deploy` / `cdk destroy`; agents don't deploy.
-
-## Public writing
-
-READMEs, blog drafts, code comments and commit messages are public. Write them for
-a reader who has the repo and nothing else:
-
-- No private context: `.brainstorm/` notes, chat or session history, plans with
-  the teammate, deadlines, budget, "as we discussed", "for the demo/recording".
-- No internal names or identities: the bucket name, account ID, emails, IAM users.
-- No results that weren't measured. Say what ran, where, and when; if something
-  hasn't run, say so instead of guessing numbers.
-- Explain why in terms the reader can check in the repo, not in terms of what
-  happened in our sessions.
+- Docs and comments are written for someone reading the repo: no account-specific names, and numbers only from real runs.
 
 ## Gotchas
 
