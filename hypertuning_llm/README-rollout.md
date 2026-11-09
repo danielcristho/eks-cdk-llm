@@ -234,8 +234,6 @@ just vllm-forward              # vLLM at localhost:8000
 python src/chat_gradio/app.py  # VLLM_URL=http://localhost:8000 in .env
 ```
 
-<!-- SCREENSHOT: the chat with the sources panel and the live log -->
-
 How well does a 1.5B model answer from a 2k-token prompt? Lookups of one line work: where and when the event is, or which room a talk is in when you give its title. Questions that need the model to scan many lines don't: "who speaks from AWS?" or "what's on the Main Stage after lunch?". Two changes helped:
 
 - **A "Speakers by company" section** in the knowledge base. `build_kb.py` groups speakers once, so "who's from AWS?" becomes a one-line lookup, and the model got it right 3 times out of 3.
